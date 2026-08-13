@@ -1,0 +1,211 @@
+import sqlite3,re,ipaddress,math,csv,io,socket,html as htmlmod
+from datetime import datetime
+from urllib.parse import urlparse,unquote
+from difflib import SequenceMatcher
+from flask import Flask,render_template,request,jsonify,Response
+import requests
+
+app=Flask(__name__); DB="safelink.db"
+BRANDS=["google","facebook","instagram","microsoft","apple","amazon","paypal","paytm","phonepe","flipkart","netflix","whatsapp","linkedin","sbi","hdfcbank","icicibank","axisbank"]
+WORDS={"login":3,"signin":3,"verify":3,"secure":2,"account":2,"update":3,"password":4,"bank":4,"wallet":3,"payment":3,"confirm":3,"recover":3,"bonus":2,"free":2,"gift":2,"claim":2,"urgent":3,"suspended":4}
+TLDS={"xyz":3,"top":3,"click":3,"work":2,"zip":3,"tk":3,"ml":3,"ga":3,"cf":3,"gq":3}
+
+def conn():
+    c=sqlite3.connect(DB); c.row_factory=sqlite3.Row; return c
+def init_db():
+    c=conn(); c.execute("CREATE TABLE IF NOT EXISTS scans(id INTEGER PRIMARY KEY AUTOINCREMENT,url TEXT,status TEXT,score INTEGER,confidence REAL,domain_status TEXT,scanned_at TEXT)"); c.commit(); c.close()
+def entropy(s):
+    if not s:return 0
+    n=len(s); return -sum((s.count(x)/n)*math.log2(s.count(x)/n) for x in set(s))
+
+def reachability(url,host):
+    try:
+        socket.getaddrinfo(host,None)
+    except (socket.gaierror,OSError):
+        return {"dns":"Not resolved","http":"Not checked","reachable":False,"detail":"Domain name could not be resolved."}
+    try:
+        r=requests.head(url,allow_redirects=True,timeout=5)
+        return {"dns":"Resolved","http":str(r.status_code),"reachable":True,"detail":f"Server responded with HTTP {r.status_code}."}
+    except requests.RequestException:
+        try:
+            r=requests.get(url,allow_redirects=True,timeout=5,stream=True)
+            return {"dns":"Resolved","http":str(r.status_code),"reachable":True,"detail":f"Server responded with HTTP {r.status_code}."}
+        except requests.RequestException:
+            return {"dns":"Resolved","http":"No response","reachable":False,"detail":"Domain resolves, but the web server did not respond."}
+
+
+def page_analysis(url):
+    result={"reachable":False,"title":"","signals":[],"brand_impersonation":[],"categories":[],
+            "forms":0,"payment_signals":0,"policy_signals":0,"discount_signals":0,
+            "status_code":"Not checked","detail":"Page content was not checked."}
+    try:
+        r=requests.get(url,headers={"User-Agent":"SafeLink-BTech-Scanner/1.0"},
+                       allow_redirects=True,timeout=7,stream=True)
+        result["status_code"]=str(r.status_code)
+        ctype=(r.headers.get("Content-Type") or "").lower()
+        if "text/html" not in ctype:
+            result["reachable"]=r.status_code<500
+            result["detail"]="Server responded, but the resource is not an HTML page."
+            return result
+        raw=r.raw.read(350000,decode_content=True)
+        page=raw.decode(r.encoding or "utf-8",errors="ignore")
+        result["reachable"]=r.status_code<500
+    except requests.RequestException:
+        result["detail"]="Website could not be fetched."
+        return result
+
+    title=re.search(r"<title[^>]*>(.*?)</title>",page,re.I|re.S)
+    result["title"]=re.sub(r"\s+"," ",htmlmod.unescape(title.group(1))).strip()[:160] if title else ""
+    visible=re.sub(r"<script[^>]*>.*?</script>|<style[^>]*>.*?</style>"," ",page,flags=re.I|re.S)
+    visible=re.sub(r"<[^>]+>"," ",visible)
+    visible=re.sub(r"\s+"," ",htmlmod.unescape(visible)).lower()
+
+    def count(pattern): return len(re.findall(pattern,visible,re.I))
+    gc=count(r"\b(casino|gambling|betting|sportsbook|slots?|jackpot|roulette|blackjack|poker|lottery|bet now|wager)\b")
+    sc=count(r"\b(add to cart|buy now|shop now|checkout|cart|order now|shipping|delivery|refund|return policy|track order)\b")
+    pc=count(r"\b(upi|payment|pay now|credit card|debit card|bank transfer|net banking|wallet|razorpay|stripe|cash on delivery|cod)\b")
+    dc=count(r"\b(\d{2,3}\s*%\s*(off|discount)|flash sale|mega sale|limited time|lowest price|huge discount|clearance sale)\b")
+    result["forms"]=len(re.findall(r"<form\b",page,re.I)); result["payment_signals"]=pc
+    result["discount_signals"]=dc
+    result["policy_signals"]=count(r"\b(privacy policy|terms and conditions|terms of service|refund policy|return policy|contact us|about us)\b")
+    if gc>=2: result["categories"].append("Gambling / betting"); result["signals"].append("Gambling or betting-related content detected")
+    if sc>=2: result["categories"].append("E-commerce"); result["signals"].append("E-commerce/shopping content detected")
+    if pc>=2: result["signals"].append("Payment-related content detected")
+    if dc: result["signals"].append("Discount/sale language detected")
+
+    host=urlparse(url).hostname.lower() if urlparse(url).hostname else ""
+    for b in BRANDS:
+        if re.search(r"\b"+re.escape(b)+r"\b",visible) or re.search(r"\b"+re.escape(b)+r"\b",result["title"],re.I):
+            official={b+".com","www."+b+".com"}
+            if b=="amazon": official|={"amazon.in","www.amazon.in","amazon.com","www.amazon.com"}
+            if b=="flipkart": official|={"flipkart.com","www.flipkart.com"}
+            if host not in official: result["brand_impersonation"].append(b)
+    if result["brand_impersonation"]:
+        result["signals"].append("Possible brand impersonation: "+", ".join(result["brand_impersonation"][:4]))
+    if "E-commerce" in result["categories"]:
+        if pc>=2 and dc>=1: result["signals"].append("Shopping + payment + strong discount combination")
+        if result["policy_signals"]<2: result["signals"].append("Few standard policy/contact pages detected")
+        if result["forms"]>0: result["signals"].append("Order/input form detected")
+    return result
+
+def analyze_url(url):
+    original=url.strip()
+    if not original:return {"status":"Invalid","score":100,"confidence":100,"reasons":["No URL entered."],"checks":[],"url":url}
+    normalized=original if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://",original) else "http://"+original
+    try:p=urlparse(normalized); host=(p.hostname or "").lower()
+    except:return {"status":"Invalid","score":100,"confidence":100,"reasons":["Invalid URL."],"checks":[],"url":url}
+    if not host:return {"status":"Invalid","score":100,"confidence":100,"reasons":["Invalid URL."],"checks":[],"url":url}
+    try:is_ip=bool(ipaddress.ip_address(host))
+    except ValueError:is_ip=False
+    parts=host.split("."); tld=parts[-1] if len(parts)>1 else ""; clean=host.replace("www.","").split(".")[0]
+    brand=[b for b in BRANDS if b in host and host not in {b+".com","www."+b+".com"}]
+    typo=[b for b in BRANDS if .72<=SequenceMatcher(None,clean,b).ratio()<1 and abs(len(clean)-len(b))<=2]
+    text=unquote(original.lower()); score=0; reasons=[]; checks=[]
+    def add(n,r):
+        nonlocal score; score+=n; reasons.append(r)
+
+    if is_ip: reach={"dns":"IP","http":"Not checked","reachable":False,"detail":"IP host; DNS check not applicable."}
+    else: reach=reachability(normalized,host)
+    if not is_ip and reach["dns"]=="Not resolved":
+        add(35,"Domain could not be resolved (it may not exist or its DNS may be unavailable)")
+    elif not is_ip and not reach["reachable"]:
+        add(8,"Domain resolves but the web server did not respond")
+    checks.append(("Domain / DNS","danger" if reach["dns"]=="Not resolved" else ("warn" if not reach["reachable"] and not is_ip else "pass"),reach["dns"]))
+
+    if p.scheme=="https": checks.append(("HTTPS","pass","Enabled"))
+    else: add(8,"Website does not use HTTPS"); checks.append(("HTTPS","warn","HTTP connection"))
+    if is_ip:add(24,"Raw IP address used instead of a domain")
+    checks.append(("IP address","danger" if is_ip else "pass","Raw IP" if is_ip else "Normal domain"))
+
+    L=len(original)
+    if L>120:add(10,"Very long URL")
+    elif L>80:add(5,"Long URL")
+    checks.append(("URL length","warn" if L>80 else "pass",f"{L} characters"))
+
+    if "@" in original:add(18,"@ symbol can hide the real destination")
+    if original.count("//")>1:add(8,"Extra // sequence suggests obfuscation")
+    if "%" in original:add(5,"Percent-encoded characters present")
+    checks.append(("Obfuscation","danger" if "@" in original or original.count("//")>1 else ("warn" if "%" in original else "pass"),"Suspicious pattern" if "@" in original or original.count("//")>1 or "%" in original else "None"))
+
+    puny="xn--" in host
+    if puny:add(18,"Punycode/look-alike hostname detected")
+    checks.append(("Look-alike","danger" if puny else "pass","Punycode" if puny else "None"))
+
+    subs=max(0,len(parts)-2)
+    if subs>=4:add(12,"Unusually many subdomains")
+    elif subs==3:add(4,"Several subdomains")
+    checks.append(("Subdomains","warn" if subs>=3 else "pass",str(subs)))
+
+    hy=host.count("-")
+    if hy>=3:add(9,"Several hyphens in hostname")
+    elif hy>=2:add(4,"Multiple hyphens")
+    checks.append(("Domain structure","warn" if hy>=2 else "pass",f"{hy} hyphens"))
+
+    if tld in TLDS:add(TLDS[tld],f"Potentially abused TLD: .{tld}")
+    checks.append(("TLD","warn" if tld in TLDS else "pass","."+tld if tld else "Unknown"))
+
+    kw=sum(v for k,v in WORDS.items() if k in text)
+    if kw:add(min(18,kw),"Phishing-related keywords detected")
+    checks.append(("Keywords","warn" if kw else "pass",f"{kw} weighted points"))
+
+    if brand:add(min(18,6*len(brand)),"Possible brand impersonation: "+", ".join(brand[:3]))
+    if typo:add(min(16,8*len(typo)),"Possible typosquatting: "+", ".join(typo[:3]))
+    checks.append(("Brand / typosquatting","danger" if brand or typo else "pass",", ".join((brand+typo)[:3]) if brand or typo else "No obvious match"))
+
+    digits=sum(x.isdigit() for x in host)
+    if digits>=5 and digits/max(1,len(host))>.25:add(6,"Unusually high digit ratio")
+    checks.append(("Hostname complexity","warn" if digits>=5 else "pass",f"{digits} digits"))
+
+    params=(p.query or "").count("="); path=len(p.path or "")
+    if params>=6:add(5,"Many query parameters")
+    if path>120:add(5,"Very long URL path")
+    checks.append(("Path / query","warn" if params>=6 or path>120 else "pass",f"{params} parameters"))
+
+    ent=entropy(host)
+    if ent>4.2 and len(host)>18:add(5,"High hostname randomness")
+    checks.append(("Hostname randomness","warn" if ent>4.2 and len(host)>18 else "pass",f"{ent:.2f} entropy"))
+
+    page={"reachable":False,"signals":[],"brand_impersonation":[],"categories":[],"forms":0,"payment_signals":0,"policy_signals":0,"discount_signals":0,"status_code":"Not checked","title":"","detail":"Page content was not checked."}
+    if reach["dns"]!="Not resolved" and not is_ip:
+        page=page_analysis(normalized)
+        if page["categories"]: add(min(8,2*len(page["categories"])+2),"Website content category: "+", ".join(page["categories"]))
+        if page["brand_impersonation"]: add(min(24,8*len(page["brand_impersonation"])),"Page may impersonate: "+", ".join(page["brand_impersonation"][:3]))
+        if page["payment_signals"]>=2 and page["discount_signals"]>=1 and "E-commerce" in page["categories"]: add(10,"E-commerce + payment + aggressive discount signals")
+        if page["policy_signals"]<2 and "E-commerce" in page["categories"]: add(5,"E-commerce page has limited standard policy/contact signals")
+        checks.append(("Website content","danger" if page["brand_impersonation"] else ("warn" if page["signals"] else "pass")," / ".join(page["signals"][:2]) if page["signals"] else "No major content warning"))
+    else:
+        checks.append(("Website content","warn" if reach["dns"]!="Not resolved" else "danger","Not checked" if reach["dns"]=="Not resolved" else "Skipped"))
+    score=min(100,round(score))
+    if reach["dns"]=="Not resolved": status="Unreachable / Invalid Domain" if score<60 else ("Suspicious" if score<80 else "Dangerous")
+    else: status="Dangerous" if score>=60 else ("Suspicious" if score>=30 else "No Suspicious Patterns")
+    confidence=min(99,round(70+abs(score-30)*.45,1))
+    return {"status":status,"score":score,"confidence":confidence,"reasons":reasons or ["No major suspicious URL or website-content patterns detected."],"checks":checks,"host":host,"scheme":p.scheme,"url":original,"domain_status":reach["dns"],"http_status":reach["http"],"reachable":reach["reachable"],"reach_detail":reach["detail"],"page":page}
+
+def save(r):
+    c=conn();c.execute("INSERT INTO scans(url,status,score,confidence,domain_status,scanned_at) VALUES(?,?,?,?,?,?)",(r["url"],r["status"],r["score"],r["confidence"],r["domain_status"],datetime.now().strftime("%Y-%m-%d %H:%M:%S")));c.commit();c.close()
+def history():
+    c=conn();rows=c.execute("SELECT * FROM scans ORDER BY id DESC LIMIT 100").fetchall();c.close();return[dict(x) for x in rows]
+
+@app.route("/",methods=["GET","POST"])
+def index():
+    r=analyze_url(request.form.get("url","")) if request.method=="POST" else None
+    if r and r["status"]!="Invalid":save(r)
+    return render_template("index.html",result=r,history=history()[:10])
+@app.get("/history")
+def hist():return render_template("history.html",history=history())
+@app.post("/api/v1/scans")
+def api_scan():
+    r=analyze_url((request.get_json(silent=True) or {}).get("url",""))
+    if r["status"]!="Invalid":save(r)
+    return jsonify(r)
+@app.get("/api/v1/scans")
+def api_history():return jsonify(history())
+@app.get("/api/v1/health")
+def health():return jsonify({"status":"ok","project":"SafeLink","reachability_check":True})
+@app.get("/export/csv")
+def export():
+    out=io.StringIO();w=csv.writer(out);w.writerow(["ID","URL","Status","Risk","Confidence","Domain Status","Time"])
+    for r in history():w.writerow([r["id"],r["url"],r["status"],r["score"],r["confidence"],r["domain_status"],r["scanned_at"]])
+    return Response(out.getvalue(),mimetype="text/csv",headers={"Content-Disposition":"attachment; filename=safelink_history.csv"})
+init_db()
+if __name__=="__main__":app.run(debug=True)
