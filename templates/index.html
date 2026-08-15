@@ -1,3 +1,22 @@
+{% if result.google_safe_browsing %}
+<div class="gsb-card">
+  <div class="gsb-head"><span>Google Safe Browsing</span>
+  <strong>{% if not result.google_safe_browsing.enabled %}Not configured{% elif result.google_safe_browsing.safe is false %}Threat detected{% else %}No known threat{% endif %}</strong></div>
+  <div class="gsb-body">
+  {% if result.google_safe_browsing.safe is false %}
+    Google Safe Browsing matched this URL against a known unsafe-resource list.
+    {% if result.google_safe_browsing.threats %}
+      <br><b>Threat type:</b>
+      {% for t in result.google_safe_browsing.threats[0].types %}{{ t }}{% if not loop.last %}, {% endif %}{% endfor %}
+    {% endif %}
+  {% elif result.google_safe_browsing.enabled %}
+    No known Google Safe Browsing threat was returned for this URL.
+  {% else %}
+    Add <code>GOOGLE_SAFE_BROWSING_API_KEY</code> to Render Environment to enable this check.
+  {% endif %}
+  </div>
+</div>
+{% endif %}
 <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SafeLink</title><link rel="stylesheet" href="/static/style.css"></head><body><nav><a class="brand" href="/">🛡️ SafeLink</a><div><a href="/">Scanner</a><a href="/history">History</a><a href="/export/csv">Export CSV</a></div></nav><main><section class="hero"><label>🔐 INTELLIGENT URL SECURITY</label><h1>Detect fake & phishing<br><em>websites before you click.</em></h1><p>SafeLink checks DNS, URL structure, public webpage content, brand impersonation and scam signals.</p><form method="POST"><input name="url" placeholder="https://example.com" value="{{result.url if result else ''}}" required><button>Scan URL →</button></form></section>{% if result %}<section class="result"><div class="top"><div><small>SCAN RESULT</small><h2>{{result.status}}</h2><p>{{result.url}}</p></div><div class="score"><strong>{{result.score}}</strong><span>/100<br>RISK</span></div></div><div class="signal">
 <div class="signal-label"><span>Website Safety Signal</span><strong>{{result.status}}</strong></div>
 <div class="signal-track"><div class="signal-fill {% if result.score < 30 %}safe{% elif result.score < 60 %}warn{% else %}danger{% endif %}" style="width:{{result.score}}%"></div></div>
@@ -6,5 +25,6 @@
 <div><small>WEBSITE TYPE</small><b>{{result.page.categories|join(", ") if result.page.categories else "Not classified"}}</b></div>
 <div><small>PAGE STATUS</small><b>{{result.page.status_code}}</b></div>
 <div><small>BRAND FLAGS</small><b>{{result.page.brand_impersonation|join(", ") if result.page.brand_impersonation else "None"}}</b></div>
+<div><small>CONTENT ACCESS</small><b>{{"Blocked — fallback used" if result.page.blocked else "Analyzed"}}</b></div>
 </div>
 <div class="grid"><article><h3>🔎 Security checks</h3>{% for n,s,d in result.checks %}<div class="check"><i class="{{s}}"></i><span>{{n}}</span><small>{{d}}</small></div>{% endfor %}</article><article><h3>⚠ Why this result?</h3>{% for x in result.reasons %}<p>• {{x}}</p>{% endfor %}<p class="note">🌐 {{result.reach_detail}}</p></article></div><aside>⚠ “No Suspicious Patterns” means the domain resolved and no major heuristic warning was found. It does not guarantee trustworthiness.</aside></section>{% endif %}<section class="features"><h2>Website & URL risk analysis</h2><div class="cards"><article>🌐<h3>DNS Verification</h3><p>Checks whether the hostname resolves before calling it safe.</p></article><article>🎯<h3>Weighted Risk</h3><p>Combines multiple signals with different severity.</p></article><article>🎭<h3>Typosquatting</h3><p>Detects near-match brand domains.</p></article><article>📜<h3>Scan History</h3><p>Stores scans locally and exports CSV.</p></article></div></section></main><footer>SafeLink • Intelligent Fake Website & URL Detection System • BTech Project</footer></body></html>

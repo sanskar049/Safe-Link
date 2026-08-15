@@ -35,67 +35,147 @@ def reachability(url,host):
 
 
 def page_analysis(url):
+    """Analyze public HTML plus safe fallback metadata when a site blocks requests."""
     result={"reachable":False,"title":"","signals":[],"brand_impersonation":[],"categories":[],
             "forms":0,"payment_signals":0,"policy_signals":0,"discount_signals":0,
-            "status_code":"Not checked","detail":"Page content was not checked."}
+            "status_code":"Not checked","detail":"Page content was not checked.","blocked":False}
+    p=urlparse(url)
+    host=(p.hostname or "").lower()
+    headers={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                         "(KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+             "Accept":"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+             "Accept-Language":"en-IN,en;q=0.9"}
+
+    # Domain-level fallback vocabulary. This is intentionally conservative.
+    domain_text=(host+" "+p.path).lower()
+    fallback_fantasy=[
+        "dream11","my11circle","mplfantasy","vision11","fantasyakhada",
+        "fantasycricket","fantasysports","myteam11","halaplay"
+    ]
+    gambling_terms=[
+        "casino","casinos","betting","bet","sportsbook","sports-betting",
+        "gambling","gamble","poker","slots","slot-machine","roulette",
+        "blackjack","jackpot","lottery","wager","bookmaker","bookie",
+        "bet365","betway","parimatch","1xbet","betfair","draftkings","fanduel",
+        "stake","22bet","melbet","dafabet","10bet","888casino","williamhill"
+    ]
+    if any(x in domain_text for x in fallback_fantasy):
+        result["categories"].append("Fantasy sports / paid contests")
+        result["signals"].append("Domain matches a fantasy-sports/paid-contest pattern")
+    if any(x in domain_text for x in gambling_terms):
+        result["categories"].append("Gambling / betting")
+        result["signals"].append("Domain contains a gambling/betting indicator")
+
     try:
-        r=requests.get(url,headers={"User-Agent":"SafeLink-BTech-Scanner/1.0"},
-                       allow_redirects=True,timeout=7,stream=True)
+        r=requests.get(url,headers=headers,allow_redirects=True,timeout=8,stream=True)
         result["status_code"]=str(r.status_code)
-        ctype=(r.headers.get("Content-Type") or "").lower()
-        if "text/html" not in ctype:
-            result["reachable"]=r.status_code<500
-            result["detail"]="Server responded, but the resource is not an HTML page."
-            return result
-        raw=r.raw.read(350000,decode_content=True)
-        page=raw.decode(r.encoding or "utf-8",errors="ignore")
         result["reachable"]=r.status_code<500
+        final_url=r.url
+        final_host=(urlparse(final_url).hostname or "").lower()
+        result["final_host"]=final_host
+        ctype=(r.headers.get("Content-Type") or "").lower()
+
+        # Read a limited amount to avoid downloading huge pages.
+        raw=r.raw.read(400000,decode_content=True)
+        page=raw.decode(r.encoding or "utf-8",errors="ignore")
+
+        title=re.search(r"<title[^>]*>(.*?)</title>",page,re.I|re.S)
+        result["title"]=re.sub(r"\s+"," ",htmlmod.unescape(title.group(1))).strip()[:160] if title else ""
+
+        # If the site blocks us, still use title/headers/final URL as metadata.
+        if r.status_code in (401,403,429):
+            result["blocked"]=True
+            result["detail"]="Website blocked automated access (HTTP %s); fallback signals used." % r.status_code
+
+        visible=re.sub(r"<script[^>]*>.*?</script>|<style[^>]*>.*?</style>"," ",page,flags=re.I|re.S)
+        visible=re.sub(r"<[^>]+>"," ",visible)
+        visible=re.sub(r"\s+"," ",htmlmod.unescape(visible)).lower()
+        metadata=(visible+" "+result["title"].lower()+" "+host+" "+final_host).lower()
+
+        def count(pattern): return len(re.findall(pattern,metadata,re.I))
+
+        gc=count(r"\b(casino|casinos|gambling|gamble|betting|sportsbook|sports[- ]?betting|slots?|jackpot|roulette|blackjack|poker|lottery|bet now|wager|bookmaker|bookie|odds|live odds|bet slip)\b")
+        fc=count(r"\b(fantasy sports?|fantasy cricket|fantasy football|fantasy league|paid contest|cash contest|real money|win cash|entry fee|prize pool|join contest|play and win|play & win|dream team|team creation)\b")
+        sc=count(r"\b(add to cart|buy now|shop now|checkout|cart|order now|shipping|delivery|refund|return policy|track order)\b")
+        pc=count(r"\b(upi|payment|pay now|credit card|debit card|bank transfer|net banking|wallet|razorpay|stripe|cash on delivery|cod|entry fee|deposit|withdrawal)\b")
+        dc=count(r"\b(\d{2,3}\s*%\s*(off|discount)|flash sale|mega sale|limited time|lowest price|huge discount|clearance sale)\b")
+
+        result["forms"]=len(re.findall(r"<form\b",page,re.I))
+        result["payment_signals"]=pc
+        result["discount_signals"]=dc
+        result["policy_signals"]=count(r"\b(privacy policy|terms and conditions|terms of service|refund policy|return policy|contact us|about us)\b")
+
+        if gc>=1 and "Gambling / betting" not in result["categories"]:
+            result["categories"].append("Gambling / betting")
+            result["signals"].append("Gambling or betting-related content detected")
+        elif gc>=1:
+            result["signals"].append("Gambling/betting content confirmed by page metadata")
+        if fc>=2 and "Fantasy sports / paid contests" not in result["categories"]:
+            result["categories"].append("Fantasy sports / paid contests")
+            result["signals"].append("Fantasy sports or paid-contest content detected")
+        if sc>=2 and "E-commerce" not in result["categories"]:
+            result["categories"].append("E-commerce")
+            result["signals"].append("E-commerce/shopping content detected")
+        if pc>=2: result["signals"].append("Payment-related content detected")
+        if dc: result["signals"].append("Discount/sale language detected")
+
+        # Brand impersonation: only flag brands in content when host is not official.
+        for b in BRANDS:
+            if re.search(r"\b"+re.escape(b)+r"\b",metadata,re.I):
+                official={b+".com","www."+b+".com"}
+                if b=="amazon": official|={"amazon.in","www.amazon.in","amazon.com","www.amazon.com"}
+                if b=="flipkart": official|={"flipkart.com","www.flipkart.com"}
+                if final_host not in official and host not in official:
+                    if b not in result["brand_impersonation"]:
+                        result["brand_impersonation"].append(b)
+        if result["brand_impersonation"]:
+            result["signals"].append("Possible brand impersonation: "+", ".join(result["brand_impersonation"][:4]))
+
+        if "E-commerce" in result["categories"]:
+            if pc>=2 and dc>=1: result["signals"].append("Shopping + payment + strong discount combination")
+            if result["policy_signals"]<2: result["signals"].append("Few standard policy/contact pages detected")
+            if result["forms"]>0: result["signals"].append("Order/input form detected")
+        if "Fantasy sports / paid contests" in result["categories"] and pc>=1:
+            result["signals"].append("Fantasy/contest content with payment or entry-fee signals")
+
+        return result
     except requests.RequestException:
-        result["detail"]="Website could not be fetched."
+        result["blocked"]=True
+        result["detail"]="Website could not be fetched; domain-level category fallback used."
+        if result["categories"]:
+            result["signals"].append("Page unavailable; category inferred from URL/domain signals")
         return result
 
-    title=re.search(r"<title[^>]*>(.*?)</title>",page,re.I|re.S)
-    result["title"]=re.sub(r"\s+"," ",htmlmod.unescape(title.group(1))).strip()[:160] if title else ""
-    visible=re.sub(r"<script[^>]*>.*?</script>|<style[^>]*>.*?</style>"," ",page,flags=re.I|re.S)
-    visible=re.sub(r"<[^>]+>"," ",visible)
-    visible=re.sub(r"\s+"," ",htmlmod.unescape(visible)).lower()
 
-    def count(pattern): return len(re.findall(pattern,visible,re.I))
-    gc=count(r"\b(casino|gambling|betting|sportsbook|slots?|jackpot|roulette|blackjack|poker|lottery|bet now|wager|sports betting)\b")
-    fc=count(r"\b(fantasy sports?|fantasy cricket|fantasy football|fantasy league|paid contest|cash contest|real money|win cash|entry fee|prize pool|join contest|play and win|play & win|dream team|team creation)\b")
-    sc=count(r"\b(add to cart|buy now|shop now|checkout|cart|order now|shipping|delivery|refund|return policy|track order)\b")
-    pc=count(r"\b(upi|payment|pay now|credit card|debit card|bank transfer|net banking|wallet|razorpay|stripe|cash on delivery|cod|entry fee|deposit|withdrawal)\b")
-    dc=count(r"\b(\d{2,3}\s*%\s*(off|discount)|flash sale|mega sale|limited time|lowest price|huge discount|clearance sale)\b")
-    result["forms"]=len(re.findall(r"<form\b",page,re.I)); result["payment_signals"]=pc
-    result["discount_signals"]=dc
-    result["policy_signals"]=count(r"\b(privacy policy|terms and conditions|terms of service|refund policy|return policy|contact us|about us)\b")
-    if gc>=2:
-        result["categories"].append("Gambling / betting")
-        result["signals"].append("Gambling or betting-related content detected")
-    if fc>=2:
-        result["categories"].append("Fantasy sports / paid contests")
-        result["signals"].append("Fantasy sports or paid-contest content detected")
-    if sc>=2:
-        result["categories"].append("E-commerce")
-        result["signals"].append("E-commerce/shopping content detected")
-    if pc>=2: result["signals"].append("Payment-related content detected")
-    if dc: result["signals"].append("Discount/sale language detected")
-
-    host=urlparse(url).hostname.lower() if urlparse(url).hostname else ""
-    for b in BRANDS:
-        if re.search(r"\b"+re.escape(b)+r"\b",visible) or re.search(r"\b"+re.escape(b)+r"\b",result["title"],re.I):
-            official={b+".com","www."+b+".com"}
-            if b=="amazon": official|={"amazon.in","www.amazon.in","amazon.com","www.amazon.com"}
-            if b=="flipkart": official|={"flipkart.com","www.flipkart.com"}
-            if host not in official: result["brand_impersonation"].append(b)
-    if result["brand_impersonation"]:
-        result["signals"].append("Possible brand impersonation: "+", ".join(result["brand_impersonation"][:4]))
-    if "E-commerce" in result["categories"]:
-        if pc>=2 and dc>=1: result["signals"].append("Shopping + payment + strong discount combination")
-        if result["policy_signals"]<2: result["signals"].append("Few standard policy/contact pages detected")
-        if result["forms"]>0: result["signals"].append("Order/input form detected")
-    if "Fantasy sports / paid contests" in result["categories"] and pc>=1:
-        result["signals"].append("Fantasy/contest content with payment or entry-fee signals")
+def google_safe_browsing_check(url):
+    """Google Safe Browsing API v5 URL reputation check."""
+    api_key = os.getenv("GOOGLE_SAFE_BROWSING_API_KEY", "").strip()
+    result = {"enabled": bool(api_key), "status": "Not configured" if not api_key else "Checking",
+              "safe": None, "threats": [], "error": None}
+    if not api_key:
+        return result
+    try:
+        r = requests.get(
+            "https://safebrowsing.googleapis.com/v5/urls:search",
+            params=[("key", api_key), ("urls", url)],
+            headers={"Accept": "application/json"},
+            timeout=8
+        )
+        if r.status_code != 200:
+            result["status"] = "API error"
+            result["error"] = f"HTTP {r.status_code}"
+            return result
+        data = r.json()
+        threats = data.get("threats", []) or []
+        result["threats"] = [{"url": x.get("url", ""), "types": x.get("threatTypes", [])} for x in threats]
+        result["safe"] = not bool(threats)
+        result["status"] = "Threat detected" if threats else "No known Google threat"
+    except requests.RequestException as exc:
+        result["status"] = "API unavailable"
+        result["error"] = str(exc)[:160]
+    except ValueError:
+        result["status"] = "Invalid API response"
+        result["error"] = "Google returned a non-JSON response"
     return result
 
 def analyze_url(url):
@@ -176,9 +256,25 @@ def analyze_url(url):
     checks.append(("Hostname randomness","warn" if ent>4.2 and len(host)>18 else "pass",f"{ent:.2f} entropy"))
 
     page={"reachable":False,"signals":[],"brand_impersonation":[],"categories":[],"forms":0,"payment_signals":0,"policy_signals":0,"discount_signals":0,"status_code":"Not checked","title":"","detail":"Page content was not checked."}
+    gsb = google_safe_browsing_check(normalized)
+    if gsb.get("safe") is False:
+        threat_types=[]
+        for item in gsb.get("threats",[]):
+            threat_types.extend(item.get("types",[]))
+        threat_types=list(dict.fromkeys(threat_types))
+        add(45, "Google Safe Browsing: known threat detected" +
+            (f" ({', '.join(threat_types)})" if threat_types else ""))
+    checks.append(("Google Safe Browsing",
+                   "danger" if gsb.get("safe") is False else ("pass" if gsb.get("enabled") else "warn"),
+                   ("Threat detected" if gsb.get("safe") is False else
+                    ("No known threat" if gsb.get("enabled") else "Not configured"))))
+
     if reach["dns"]!="Not resolved" and not is_ip:
         page=page_analysis(normalized)
-        if page["categories"]: add(min(8,2*len(page["categories"])+2),"Website content category: "+", ".join(page["categories"]))
+        if page["categories"]:
+            # Categories are informational. Add only a small risk contribution.
+            category_weight = 2 if "Gambling / betting" in page["categories"] else 0
+            add(category_weight,"Website category: "+", ".join(page["categories"]))
         if page["brand_impersonation"]: add(min(24,8*len(page["brand_impersonation"])),"Page may impersonate: "+", ".join(page["brand_impersonation"][:3]))
         if page["payment_signals"]>=2 and page["discount_signals"]>=1 and "E-commerce" in page["categories"]: add(10,"E-commerce + payment + aggressive discount signals")
         if page["policy_signals"]<2 and "E-commerce" in page["categories"]: add(5,"E-commerce page has limited standard policy/contact signals")
@@ -189,7 +285,11 @@ def analyze_url(url):
     if reach["dns"]=="Not resolved": status="Unreachable / Invalid Domain" if score<60 else ("Suspicious" if score<80 else "Dangerous")
     else: status="Dangerous" if score>=60 else ("Suspicious" if score>=30 else "No Suspicious Patterns")
     confidence=min(99,round(70+abs(score-30)*.45,1))
-    return {"status":status,"score":score,"confidence":confidence,"reasons":reasons or ["No major suspicious URL or website-content patterns detected."],"checks":checks,"host":host,"scheme":p.scheme,"url":original,"domain_status":reach["dns"],"http_status":reach["http"],"reachable":reach["reachable"],"reach_detail":reach["detail"],"page":page}
+    if gsb.get("safe") is False:
+        score=min(100,max(80,score))
+        status="Dangerous"
+        confidence=99
+    return {"status":status,"score":score,"confidence":confidence,"reasons":reasons or ["No major suspicious URL or website-content patterns detected."],"checks":checks,"host":host,"scheme":p.scheme,"url":original,"domain_status":reach["dns"],"http_status":reach["http"],"reachable":reach["reachable"],"reach_detail":reach["detail"],"page":page,"google_safe_browsing":gsb}
 
 def save(r):
     c=conn();c.execute("INSERT INTO scans(url,status,score,confidence,domain_status,scanned_at) VALUES(?,?,?,?,?,?)",(r["url"],r["status"],r["score"],r["confidence"],r["domain_status"],datetime.now().strftime("%Y-%m-%d %H:%M:%S")));c.commit();c.close()
