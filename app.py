@@ -4,6 +4,7 @@ from urllib.parse import urlparse,unquote
 from difflib import SequenceMatcher
 from flask import Flask,render_template,request,jsonify,Response
 import requests
+import os
 
 app=Flask(__name__); DB="safelink.db"
 BRANDS=["google","facebook","instagram","microsoft","apple","amazon","paypal","paytm","phonepe","flipkart","netflix","whatsapp","linkedin","sbi","hdfcbank","icicibank","axisbank"]
