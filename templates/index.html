@@ -21,9 +21,9 @@
 <div class="signal-label"><span>Website Safety Signal</span><strong>{{result.status}}</strong></div>
 <div class="signal-track"><div class="signal-fill {% if result.score < 30 %}safe{% elif result.score < 60 %}warn{% else %}danger{% endif %}" style="width:{{result.score}}%"></div></div>
 <div class="signal-dots"><span><i class="dot green"></i> Low Risk</span><span><i class="dot yellow"></i> Suspicious</span><span><i class="dot red"></i> Dangerous</span></div>
-</div><div class="stats"><div><small>DOMAIN STATUS</small><b>{{result.domain_status}}</b></div><div><small>SERVER</small><b>{{result.http_status}}</b></div><div><small>HOST</small><b>{{result.host}}</b></div></div><div class="content-summary">
+</div><div class="stats"><div><small>Website Address</small><b>{{result.domain_status}}</b></div><div><small>SERVER</small><b>{{result.http_status}}</b></div><div><small>HOST</small><b>{{result.host}}</b></div></div><div class="content-summary">
 <div><small>WEBSITE TYPE</small><b>{{result.page.categories|join(", ") if result.page.categories else "Not classified"}}</b></div>
-<div><small>PAGE STATUS</small><b>{{result.page.status_code}}</b></div>
+<div><small>Webpage</small><b>{{result.page.status_code}}</b></div>
 <div><small>BRAND FLAGS</small><b>{{result.page.brand_impersonation|join(", ") if result.page.brand_impersonation else "None"}}</b></div>
 <div><small>CONTENT ACCESS</small><b>{{"Blocked — fallback used" if result.page.blocked else "Analyzed"}}</b></div>
 </div>
@@ -52,4 +52,33 @@
   </div>
 </div>
 {% endif %}
-<div class="grid"><article><h3>🔎 Security checks</h3>{% for n,s,d in result.checks %}<div class="check"><i class="{{s}}"></i><span>{{n}}</span><small>{{d}}</small></div>{% endfor %}</article><article><h3>⚠ Why this result?</h3>{% for x in result.reasons %}<p>• {{x}}</p>{% endfor %}<p class="note">🌐 {{result.reach_detail}}</p></article></div><aside>⚠ “No Suspicious Patterns” means the domain resolved and no major heuristic warning was found. It does not guarantee trustworthiness.</aside></section>{% endif %}<section class="features"><h2>Website & URL risk analysis</h2><div class="cards"><article>🌐<h3>DNS Verification</h3><p>Checks whether the hostname resolves before calling it safe.</p></article><article>🎯<h3>Weighted Risk</h3><p>Combines multiple signals with different severity.</p></article><article>🎭<h3>Typosquatting</h3><p>Detects near-match brand domains.</p></article><article>📜<h3>Scan History</h3><p>Stores scans locally and exports CSV.</p></article></div></section></main><footer>SafeLink • Intelligent Fake Website & URL Detection System • BTech Project</footer></body></html>
+<div class="grid"><article><h3>🔎 Security checks</h3>{% for n,s,d in result.checks %}<div class="check"><i class="{{s}}"></i><span>{{n}}</span><small>{{d}}</small></div>{% endfor %}</article><article><h3>⚠ Why this result?</h3>{% for x in result.reasons %}<p>• {{x}}</p>{% endfor %}<p class="note">🌐 {{result.reach_detail}}</p></article></div><aside>⚠ “No Suspicious Patterns” means the domain resolved and no major heuristic warning was found. It does not guarantee trustworthiness.</aside></section>{% endif %}<section class="features"><h2>Website & URL risk analysis
+
+<div class="feature-points">
+  <div class="feature-point">
+    <div class="feature-icon">🔍</div>
+    <div><h3>URL &amp; Domain Analysis</h3><p>Checks URL structure, DNS resolution and domain-level risk signals.</p></div>
+  </div>
+  <div class="feature-point">
+    <div class="feature-icon">🌐</div>
+    <div><h3>Webpage &amp; Category Analysis</h3><p>Analyzes accessible page content for scam, gambling, paid-contest and suspicious signals.</p></div>
+  </div>
+  <div class="feature-point">
+    <div class="feature-icon">🎭</div>
+    <div><h3>Brand Impersonation Detection</h3><p>Looks for suspicious brand use and look-alike domains while reducing false positives.</p></div>
+  </div>
+  <div class="feature-point">
+    <div class="feature-icon">🛡️</div>
+    <div><h3>Google Safe Browsing</h3><p>Checks the submitted URL against Google's known unsafe-resource lists.</p></div>
+  </div>
+  <div class="feature-point">
+    <div class="feature-icon">🚨</div>
+    <div><h3>Multi-Layer Risk Score</h3><p>Combines independent signals into an explainable security risk result.</p></div>
+  </div>
+  <div class="feature-point">
+    <div class="feature-icon">📊</div>
+    <div><h3>Scan History &amp; Reports</h3><p>Keeps local scan history and supports CSV export for project demonstrations.</p></div>
+  </div>
+</div>
+
+</section></main><footer>SafeLink • Intelligent Fake Website & URL Detection System • BTech Project</footer></body></html>

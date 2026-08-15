@@ -75,3 +75,13 @@ footer{text-align:center;padding:30px;color:#71859f;border-top:1px solid #dce7f3
     font-weight:600;
     line-height:1.5;
 }
+
+/* FINAL UI polish */
+.feature-points{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:18px}
+.feature-point{display:flex;gap:13px;align-items:flex-start;padding:14px 16px;background:#fff;border:1px solid #dce7f3;border-radius:13px}
+.feature-icon{font-size:24px;line-height:1.1}
+.feature-point h3{margin:0 0 5px;font-size:15px;font-weight:800}
+.feature-point p{margin:0;font-size:12px;line-height:1.5;color:#53657a}
+.why-result-content,.why-result-content p,.why-result-content li,.why-result-content .reason,.why-result-content .reason-item,
+.reasons-list,.reasons-list li,.reason-item{font-weight:800 !important}
+@media(max-width:760px){.feature-points{grid-template-columns:1fr}}
