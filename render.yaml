@@ -1,6 +1,0 @@
-services:
-  - type: web
-    name: safelink-detector
-    runtime: python
-    buildCommand: pip install -r requirements.txt && python -m playwright install --with-deps chromium
-    startCommand: gunicorn app:app
