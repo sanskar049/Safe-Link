@@ -2,6 +2,7 @@ import sqlite3,re,ipaddress,math,csv,io,socket,html as htmlmod
 from datetime import datetime
 from urllib.parse import urlparse,unquote
 from difflib import SequenceMatcher
+from werkzeug.exceptions import HTTPException
 from flask import Flask,render_template,request,jsonify,Response
 import requests
 import os
@@ -17,9 +18,20 @@ WORDS={"login":3,"signin":3,"verify":3,"secure":2,"account":2,"update":3,"passwo
 TLDS={"xyz":3,"top":3,"click":3,"work":2,"zip":3,"tk":3,"ml":3,"ga":3,"cf":3,"gq":3}
 
 def conn():
-    c=sqlite3.connect(DB); c.row_factory=sqlite3.Row; return c
+    c=sqlite3.connect(DB, timeout=10)
+    c.row_factory=sqlite3.Row
+    c.execute("PRAGMA busy_timeout=10000")
+    return c
 def init_db():
-    c=conn(); c.execute("CREATE TABLE IF NOT EXISTS scans(id INTEGER PRIMARY KEY AUTOINCREMENT,url TEXT,status TEXT,score INTEGER,confidence REAL,domain_status TEXT,scanned_at TEXT)"); c.commit(); c.close()
+    c=conn()
+    c.execute("PRAGMA journal_mode=WAL")
+    c.execute("CREATE TABLE IF NOT EXISTS scans(id INTEGER PRIMARY KEY AUTOINCREMENT,url TEXT,status TEXT,score INTEGER,confidence REAL,domain_status TEXT,scanned_at TEXT)")
+    cols={row[1] for row in c.execute("PRAGMA table_info(scans)").fetchall()}
+    wanted={"url":"TEXT","status":"TEXT","score":"INTEGER","confidence":"REAL","domain_status":"TEXT","scanned_at":"TEXT"}
+    for name,typ in wanted.items():
+        if name not in cols:
+            c.execute(f"ALTER TABLE scans ADD COLUMN {name} {typ}")
+    c.commit(); c.close()
 def entropy(s):
     if not s:return 0
     n=len(s); return -sum((s.count(x)/n)*math.log2(s.count(x)/n) for x in set(s))
@@ -30,256 +42,143 @@ def reachability(url,host):
     except (socket.gaierror,OSError):
         return {"dns":"Not resolved","http":"Not checked","reachable":False,"detail":"Domain name could not be resolved."}
     try:
-        r=requests.head(url,allow_redirects=True,timeout=5)
-        return {"dns":"Resolved","http":str(r.status_code),"reachable":True,"detail":f"Server responded with HTTP {r.status_code}."}
+        r=requests.get(url,allow_redirects=True,timeout=7,stream=True,headers={"User-Agent":"Mozilla/5.0"})
+        code=r.status_code; final=r.url; r.close()
+        return {"dns":"Resolved","http":str(code),"reachable":True,"detail":f"Server responded with HTTP {code}.","final_url":final}
     except requests.RequestException:
-        try:
-            r=requests.get(url,allow_redirects=True,timeout=5,stream=True)
-            return {"dns":"Resolved","http":str(r.status_code),"reachable":True,"detail":f"Server responded with HTTP {r.status_code}."}
-        except requests.RequestException:
-            return {"dns":"Resolved","http":"No response","reachable":False,"detail":"Domain resolves, but the web server did not respond."}
+        return {"dns":"Resolved","http":"No response","reachable":False,"detail":"Domain resolves, but the web server did not respond."}
 
 
 
 def browser_page_analysis(url, headers=None):
-    """Render a page in Chromium for JS-heavy/403 pages.
-    Returns None when Playwright/Chromium is unavailable.
+    """Render a public URL with Chromium and return visible text/HTML.
+    This is a fallback for JS-heavy pages and HTTP 403/429/5xx responses.
     """
     if sync_playwright is None:
         return None
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(
-                headless=True,
-                args=["--no-sandbox","--disable-dev-shm-usage"]
-            )
+            browser = pw.chromium.launch(headless=True, args=["--no-sandbox","--disable-dev-shm-usage"])
             context = browser.new_context(
-                user_agent=(headers or {}).get("User-Agent"),
-                locale="en-IN",
-                java_script_enabled=True,
-                ignore_https_errors=True,
+                user_agent=(headers or {}).get("User-Agent") or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36",
+                locale="en-IN", java_script_enabled=True, ignore_https_errors=True,
                 viewport={"width":1365,"height":900}
             )
-            page = context.new_page()
-            response = page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            page=context.new_page()
+            response=None
             try:
-                page.wait_for_load_state("networkidle", timeout=5000)
+                response=page.goto(url, wait_until="domcontentloaded", timeout=20000)
             except Exception:
+                # A navigation timeout can still leave a useful rendered DOM.
                 pass
-            # Give client-side apps a short time to render.
-            page.wait_for_timeout(1200)
+            try: page.wait_for_load_state("networkidle", timeout=6000)
+            except Exception: pass
+            try: page.wait_for_timeout(1000)
+            except Exception: pass
             final_url=page.url
-            title=page.title()[:160]
-            visible=page.locator("body").inner_text(timeout=3000)[:300000]
-            html=page.content()[:600000]
+            title=page.title()[:200]
+            visible=""
+            try: visible=page.locator("body").inner_text(timeout=4000)[:300000]
+            except Exception: pass
+            html=page.content()[:700000]
             status=response.status if response else None
             browser.close()
-            return {
-                "status_code": str(status) if status else "Rendered",
-                "final_url": final_url,
-                "title": title,
-                "visible": visible,
-                "html": html,
-                "reachable": True,
-                "blocked": False,
-                "detail": "Page rendered in a browser for JavaScript/content analysis."
-            }
+            return {"status_code":str(status) if status else "Rendered","final_url":final_url,
+                    "title":title,"visible":visible,"html":html,"reachable":True,
+                    "blocked": bool(status in (401,403,429)),
+                    "detail":"Page rendered in a browser for JavaScript/content analysis."}
     except Exception as exc:
-        return {"error": str(exc)[:180], "reachable": False}
+        return {"error":str(exc)[:240],"reachable":False}
 
 def page_analysis(url):
-    """Analyze public HTML plus safe fallback metadata when a site blocks requests."""
+    """Analyze public page content with HTTP first, then Chromium, then safe fallback."""
     result={"reachable":False,"title":"","signals":[],"brand_impersonation":[],"categories":[],
             "forms":0,"payment_signals":0,"policy_signals":0,"discount_signals":0,
-            "status_code":"Not checked","detail":"Page content was not checked.","blocked":False}
-    p=urlparse(url)
-    host=(p.hostname or "").lower()
-    headers={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                         "(KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+            "status_code":"Not checked","detail":"Page content was not checked.","blocked":False,
+            "content_source":"Not checked"}
+    p=urlparse(url); host=(p.hostname or "").lower()
+    headers={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36",
              "Accept":"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
              "Accept-Language":"en-IN,en;q=0.9"}
-
-    # Domain-level fallback vocabulary. This is intentionally conservative.
     domain_text=(host+" "+p.path).lower()
-    fallback_fantasy=[
-        "dream11","my11circle","mplfantasy","vision11","fantasyakhada",
-        "fantasycricket","fantasysports","myteam11","halaplay"
-    ]
-    gambling_terms=[
-        "casino","casinos","betting","bet","sportsbook","sports-betting",
-        "gambling","gamble","poker","slots","slot-machine","roulette",
-        "blackjack","jackpot","lottery","wager","bookmaker","bookie",
-        "bet365","betway","parimatch","1xbet","betfair","draftkings","fanduel",
-        "stake","22bet","melbet","dafabet","10bet","888casino","williamhill"
-    ]
-    if any(x in domain_text for x in fallback_fantasy):
-        result["categories"].append("Fantasy sports / paid contests")
-        result["signals"].append("Domain matches a fantasy-sports/paid-contest pattern")
-    if any(x in domain_text for x in gambling_terms):
-        result["categories"].append("Gambling / betting")
-        result["signals"].append("Domain contains a gambling/betting indicator")
+    fallback_fantasy=["dream11","my11circle","mplfantasy","vision11","fantasyakhada","fantasycricket","fantasysports","myteam11","halaplay"]
+    gambling_terms=["casino","casinos","betting","bet","sportsbook","sports-betting","gambling","gamble","poker","slots","slot-machine","roulette","blackjack","jackpot","lottery","wager","bookmaker","bookie","bet365","betway","parimatch","1xbet","betfair","draftkings","fanduel","stake","22bet","melbet","dafabet","10bet","888casino","williamhill"]
+    piracy_terms=["netmirror","movie","movies","webseries","web-series","series","watch-online","watchfree","downloadmovie","download-movie","1080p","720p","480p","camrip","webrip","bluray","dual-audio","torrent","magnet","pirated","piracy","free-streaming"]
+    if any(x in domain_text for x in fallback_fantasy): result["categories"].append("Fantasy sports / paid contests"); result["signals"].append("Domain matches a fantasy-sports/paid-contest pattern")
+    if any(x in domain_text for x in gambling_terms): result["categories"].append("Gambling / betting"); result["signals"].append("Domain contains a gambling/betting indicator")
+    if any(x in domain_text for x in piracy_terms): result["categories"].append("Potentially unauthorized streaming / piracy"); result["signals"].append("Domain/URL contains a streaming or piracy indicator")
 
-    try:
-        r=requests.get(url,headers=headers,allow_redirects=True,timeout=8,stream=True)
-        result["status_code"]=str(r.status_code)
-        result["reachable"]=r.status_code<500
-        final_url=r.url
-        final_host=(urlparse(final_url).hostname or "").lower()
-        result["final_host"]=final_host
-        ctype=(r.headers.get("Content-Type") or "").lower()
-
-        # Read a limited amount to avoid downloading huge pages.
-        raw=r.raw.read(400000,decode_content=True)
-        page=raw.decode(r.encoding or "utf-8",errors="ignore")
-
-        title=re.search(r"<title[^>]*>(.*?)</title>",page,re.I|re.S)
-        result["title"]=re.sub(r"\s+"," ",htmlmod.unescape(title.group(1))).strip()[:160] if title else ""
-
-        # If the site blocks us, still use title/headers/final URL as metadata.
-        if r.status_code in (401,403,429):
-            result["blocked"]=True
-            result["detail"]="Website blocked automated access (HTTP %s); fallback signals used." % r.status_code
-
+    def analyze_content(page, title="", final_host=""):
         visible=re.sub(r"<script[^>]*>.*?</script>|<style[^>]*>.*?</style>"," ",page,flags=re.I|re.S)
         visible=re.sub(r"<[^>]+>"," ",visible)
         visible=re.sub(r"\s+"," ",htmlmod.unescape(visible)).lower()
-        metadata=(visible+" "+result["title"].lower()+" "+host+" "+final_host).lower()
-
+        metadata=(visible+" "+title.lower()+" "+host+" "+final_host).lower()
         def count(pattern): return len(re.findall(pattern,metadata,re.I))
-
         gc=count(r"\b(casino|casinos|gambling|gamble|betting|sportsbook|sports[- ]?betting|slots?|jackpot|roulette|blackjack|poker|lottery|bet now|wager|bookmaker|bookie|odds|live odds|bet slip)\b")
         fc=count(r"\b(fantasy sports?|fantasy cricket|fantasy football|fantasy league|paid contest|cash contest|real money|win cash|entry fee|prize pool|join contest|play and win|play & win|dream team|team creation)\b")
         sc=count(r"\b(add to cart|buy now|shop now|checkout|cart|order now|shipping|delivery|refund|return policy|track order)\b")
         pc=count(r"\b(upi|payment|pay now|credit card|debit card|bank transfer|net banking|wallet|razorpay|stripe|cash on delivery|cod|entry fee|deposit|withdrawal)\b")
         dc=count(r"\b(\d{2,3}\s*%\s*(off|discount)|flash sale|mega sale|limited time|lowest price|huge discount|clearance sale)\b")
-
-        result["forms"]=len(re.findall(r"<form\b",page,re.I))
-        result["payment_signals"]=pc
-        result["discount_signals"]=dc
+        pir=count(r"\b(movie|movies|web series|webseries|watch online|watch free|download movie|download movies|1080p|720p|480p|camrip|webrip|bluray|dual audio|subtitles|torrent|magnet|pirated|piracy|free streaming)\b")
+        result["forms"] = len(re.findall(r"<form\b",page,re.I)); result["payment_signals"]=pc; result["discount_signals"]=dc
         result["policy_signals"]=count(r"\b(privacy policy|terms and conditions|terms of service|refund policy|return policy|contact us|about us)\b")
-
-        if gc>=1 and "Gambling / betting" not in result["categories"]:
-            result["categories"].append("Gambling / betting")
-            result["signals"].append("Gambling or betting-related content detected")
-        elif gc>=1:
-            result["signals"].append("Gambling/betting content confirmed by page metadata")
-        if fc>=2 and "Fantasy sports / paid contests" not in result["categories"]:
-            result["categories"].append("Fantasy sports / paid contests")
-            result["signals"].append("Fantasy sports or paid-contest content detected")
-        if sc>=2 and "E-commerce" not in result["categories"]:
-            result["categories"].append("E-commerce")
-            result["signals"].append("E-commerce/shopping content detected")
+        if gc and "Gambling / betting" not in result["categories"]: result["categories"].append("Gambling / betting"); result["signals"].append("Gambling/betting content detected in page content")
+        if fc>=2 and "Fantasy sports / paid contests" not in result["categories"]: result["categories"].append("Fantasy sports / paid contests"); result["signals"].append("Fantasy/paid-contest content detected in page content")
+        if sc>=2 and "E-commerce" not in result["categories"]: result["categories"].append("E-commerce"); result["signals"].append("Shopping/e-commerce content detected in page content")
+        if pir>=3 and "Potentially unauthorized streaming / piracy" not in result["categories"]: result["categories"].append("Potentially unauthorized streaming / piracy"); result["signals"].append("Multiple movie/streaming/piracy signals detected in page content")
         if pc>=2: result["signals"].append("Payment-related content detected")
         if dc: result["signals"].append("Discount/sale language detected")
-
-        # Brand impersonation: do NOT flag a brand merely because its name appears
-        # in a footer, social-media link, review, article, or external link.
-        # Require stronger evidence such as brand + login/account/payment language,
-        # a brand-like title, or a suspicious host containing the brand name.
-        official_domains={
-            "amazon":{"amazon.com","amazon.in","www.amazon.com","www.amazon.in"},
-            "flipkart":{"flipkart.com","www.flipkart.com"},
-            "facebook":{"facebook.com","www.facebook.com"},
-            "instagram":{"instagram.com","www.instagram.com"},
-            "linkedin":{"linkedin.com","www.linkedin.com"},
-            "google":{"google.com","www.google.com"},
-            "microsoft":{"microsoft.com","www.microsoft.com"},
-            "apple":{"apple.com","www.apple.com"},
-            "paypal":{"paypal.com","www.paypal.com"},
-            "netflix":{"netflix.com","www.netflix.com"},
-            "youtube":{"youtube.com","www.youtube.com"},
-        }
-        brand_context_words=r"login|log in|sign in|signin|account|password|verify|verification|secure|payment|checkout|wallet|otp|one[- ]time password|bank|customer support"
-        suspicious_host_words=r"login|verify|secure|account|support|update|bonus|offer|claim|wallet|auth"
+        # Strong brand impersonation only; a social link/mention alone is NOT enough.
+        official={"amazon":{"amazon.com","amazon.in","www.amazon.com","www.amazon.in"},"flipkart":{"flipkart.com","www.flipkart.com"},"facebook":{"facebook.com","www.facebook.com"},"instagram":{"instagram.com","www.instagram.com"},"linkedin":{"linkedin.com","www.linkedin.com"},"google":{"google.com","www.google.com"},"microsoft":{"microsoft.com","www.microsoft.com"},"apple":{"apple.com","www.apple.com"},"paypal":{"paypal.com","www.paypal.com"},"netflix":{"netflix.com","www.netflix.com"},"youtube":{"youtube.com","www.youtube.com"}}
+        context=r"login|log in|sign in|signin|account|password|verify|verification|secure|payment|checkout|wallet|otp|one[- ]time password|bank|customer support"
+        suspicious=r"login|verify|secure|account|support|update|bonus|offer|claim|wallet|auth"
         for b in BRANDS:
-            brand=re.escape(b)
-            official=official_domains.get(b,{b+".com","www."+b+".com"})
-            if final_host in official or host in official:
-                continue
-
-            # A suspicious host that itself embeds the brand is strong evidence.
-            host_has_brand=bool(re.search(r"(^|[.\-_])"+brand+r"([.\-_]|$)",host,re.I))
-            host_has_suspicious=bool(re.search(suspicious_host_words,host,re.I))
-
-            # Look at visible text/title only, not raw HTML links.
-            brand_context=bool(re.search(
-                r"\b"+brand+r"\b.{0,80}(?:"+brand_context_words+r")|"+
-                r"(?:"+brand_context_words+r").{0,80}\b"+brand+r"\b",
-                visible,re.I
-            ))
-            title_brand=bool(re.search(r"\b"+brand+r"\b",result["title"],re.I))
-            title_context=bool(re.search(brand_context_words,result["title"],re.I))
-
-            # Strong impersonation evidence requires at least two signals,
-            # except a brand embedded in a suspicious-looking host.
-            strong=(host_has_brand and host_has_suspicious) or                    (brand_context and (title_brand or host_has_brand)) or                    (title_brand and title_context and host_has_suspicious)
-
-            if strong and b not in result["brand_impersonation"]:
+            if final_host in official.get(b,{b+".com","www."+b+".com"}) or host in official.get(b,{b+".com","www."+b+".com"}): continue
+            hb=bool(re.search(r"(^|[.\-_])"+re.escape(b)+r"([.\-_]|$)",host,re.I)); hs=bool(re.search(suspicious,host,re.I))
+            bc=bool(re.search(r"\b"+re.escape(b)+r"\b.{0,80}(?:"+context+r")|(?:"+context+r").{0,80}\b"+re.escape(b)+r"\b",visible,re.I))
+            tb=bool(re.search(r"\b"+re.escape(b)+r"\b",title,re.I)); tc=bool(re.search(context,title,re.I))
+            if (hb and hs) or (bc and (tb or hb)) or (tb and tc and hs):
                 result["brand_impersonation"].append(b)
+        if result["brand_impersonation"]: result["signals"].append("Possible brand impersonation based on domain/page context: "+", ".join(result["brand_impersonation"][:4]))
+        return len(visible.strip())
 
-        if result["brand_impersonation"]:
-            result["signals"].append(
-                "Possible brand impersonation based on domain/page-context signals: "+
-                ", ".join(result["brand_impersonation"][:4])
-            )
+    # HTTP acquisition. Do not treat 403/429/5xx as final: browser fallback gets a chance.
+    http_failed=False
+    try:
+        r=requests.get(url,headers=headers,allow_redirects=True,timeout=10,stream=True)
+        result["status_code"]=str(r.status_code); result["reachable"]=True; final_url=r.url
+        result["final_host"]=(urlparse(final_url).hostname or "").lower(); ctype=(r.headers.get("Content-Type") or "").lower()
+        raw=r.raw.read(600000,decode_content=True); r.close(); page=raw.decode(r.encoding or "utf-8",errors="ignore")
+        m=re.search(r"<title[^>]*>(.*?)</title>",page,re.I|re.S); result["title"]=re.sub(r"\s+"," ",htmlmod.unescape(m.group(1))).strip()[:200] if m else ""
+        if r.status_code in (401,403,429,500,502,503,504) or len(page.strip())<80:
+            http_failed=True; result["blocked"]=r.status_code in (401,403,429)
+        else:
+            result["content_source"]="HTTP"; analyze_content(page,result["title"],result["final_host"]); return result
+    except requests.RequestException as exc:
+        http_failed=True
+        result["detail"]="Direct page request failed; browser rendering was attempted."; result["blocked"]=True
 
-        if "E-commerce" in result["categories"]:
-            if pc>=2 and dc>=1: result["signals"].append("Shopping + payment + strong discount combination")
-            if result["policy_signals"]<2: result["signals"].append("Few standard policy/contact pages detected")
-            if result["forms"]>0: result["signals"].append("Order/input form detected")
-        if "Fantasy sports / paid contests" in result["categories"] and pc>=1:
-            result["signals"].append("Fantasy/contest content with payment or entry-fee signals")
-
-        return result
-    except requests.RequestException:
-        # Second layer: render the page with Chromium for JS-heavy sites and
-        # servers that reject simple HTTP clients.
-        rendered=browser_page_analysis(url,headers)
-        if rendered and rendered.get("reachable"):
-            result["status_code"]=rendered.get("status_code","Rendered")
-            result["reachable"]=True
-            result["blocked"]=False
-            result["detail"]=rendered.get("detail","Browser-rendered fallback used.")
-            result["final_host"]=(urlparse(rendered.get("final_url",url)).hostname or "").lower()
-            result["title"]=rendered.get("title","")[:160]
-            page=rendered.get("html","")
-            visible=re.sub(r"<script[^>]*>.*?</script>|<style[^>]*>.*?</style>"," ",page,flags=re.I|re.S)
-            # Prefer actual browser-visible text when available.
-            visible_text=rendered.get("visible","")
-            visible=(visible_text+" "+visible)
-            visible=re.sub(r"<[^>]+>"," ",visible)
-            visible=re.sub(r"\s+"," ",htmlmod.unescape(visible)).lower()
-            metadata=(visible+" "+result["title"].lower()+" "+host).lower()
-
-            def count(pattern): return len(re.findall(pattern,metadata,re.I))
-            gc=count(r"\b(casino|casinos|gambling|gamble|betting|sportsbook|sports[- ]?betting|slots?|jackpot|roulette|blackjack|poker|lottery|bet now|wager|bookmaker|bookie|odds|live odds|bet slip)\b")
-            fc=count(r"\b(fantasy sports?|fantasy cricket|fantasy football|fantasy league|paid contest|cash contest|real money|win cash|entry fee|prize pool|join contest|play and win|play & win|dream team|team creation)\b")
-            sc=count(r"\b(add to cart|buy now|shop now|checkout|cart|order now|shipping|delivery|refund|return policy|track order)\b")
-            pc=count(r"\b(upi|payment|pay now|credit card|debit card|bank transfer|net banking|wallet|razorpay|stripe|cash on delivery|cod|entry fee|deposit|withdrawal)\b")
-            dc=count(r"\b(\d{2,3}\s*%\s*(off|discount)|flash sale|mega sale|limited time|lowest price|huge discount|clearance sale)\b")
-            result["forms"]=len(re.findall(r"<form\b",page,re.I))
-            result["payment_signals"]=pc; result["discount_signals"]=dc
-            result["policy_signals"]=count(r"\b(privacy policy|terms and conditions|terms of service|refund policy|return policy|contact us|about us)\b")
-            if gc and "Gambling / betting" not in result["categories"]:
-                result["categories"].append("Gambling / betting"); result["signals"].append("Gambling/betting content detected in rendered page")
-            if fc>=2 and "Fantasy sports / paid contests" not in result["categories"]:
-                result["categories"].append("Fantasy sports / paid contests"); result["signals"].append("Fantasy/paid-contest content detected in rendered page")
-            if sc>=2 and "E-commerce" not in result["categories"]:
-                result["categories"].append("E-commerce"); result["signals"].append("Shopping/e-commerce content detected in rendered page")
-            if count(r"\b(movie|movies|series|web series|watch online|watch free|download movie|download movies|1080p|720p|480p|camrip|webrip|bluray|dual audio|subtitles|torrent|magnet|pirated|piracy|free streaming)\b")>=2:
-                if "Potentially unauthorized streaming / piracy" not in result["categories"]:
-                    result["categories"].append("Potentially unauthorized streaming / piracy")
-                    result["signals"].append("Multiple signals associated with unauthorized movie/TV streaming detected")
-            if pc>=2: result["signals"].append("Payment-related content detected")
-            if dc: result["signals"].append("Discount/sale language detected")
-            return result
-
-        result["blocked"]=True
-        result["detail"]="Website blocked both direct and browser-based access; URL/domain and reputation signals were used."
-        if result["categories"]:
-            result["signals"].append("Page unavailable; category inferred from available URL/domain signals")
-        return result
-
+    # Browser fallback for blocked/empty/JS-heavy pages.
+    if http_failed:
+        candidates=[url]
+        # If a specific path returns 404, try the site's origin as a second public entry point.
+        if result.get("status_code")=="404" and p.path not in ("","/"):
+            candidates.append(f"{p.scheme}://{p.netloc}/")
+        for candidate in candidates:
+            rendered=browser_page_analysis(candidate,headers)
+            if not rendered or not rendered.get("reachable"): continue
+            result["status_code"]=rendered.get("status_code",result.get("status_code","Rendered")); result["reachable"]=True
+            result["final_host"]=(urlparse(rendered.get("final_url",candidate)).hostname or "").lower(); result["title"]=rendered.get("title","")[:200]
+            result["content_source"]="Browser (Chromium)"; result["blocked"]=bool(rendered.get("blocked"))
+            page=rendered.get("html",""); chars=analyze_content(page,result["title"],result["final_host"])
+            visible=rendered.get("visible","")
+            if visible: analyze_content(visible,result["title"],result["final_host"])
+            result["detail"]="Page rendered in Chromium for content analysis." if chars else "Browser opened the page but no readable public content was available."
+            if chars or result["categories"] or result["signals"]: return result
+    result["blocked"]=True if result.get("status_code") in ("401","403","429") else result.get("blocked",False)
+    result["content_source"]="URL/domain fallback"
+    result["detail"]="Page content was not publicly readable; URL, DNS and reputation checks were used instead."
+    return result
 
 def google_safe_browsing_check(url):
     """Google Safe Browsing API v5 URL reputation check."""
@@ -455,9 +354,26 @@ def friendly_statuses(result):
             "page":{"label":pageui[0],"state":pageui[1],"help":pageui[2],"technical":ps}}
 
 def save(r):
-    c=conn();c.execute("INSERT INTO scans(url,status,score,confidence,domain_status,scanned_at) VALUES(?,?,?,?,?,?)",(r["url"],r["status"],r["score"],r["confidence"],r["domain_status"],datetime.now().strftime("%Y-%m-%d %H:%M:%S")));c.commit();c.close()
+    c=conn();
+    try:
+        c.execute("INSERT INTO scans(url,status,score,confidence,domain_status,scanned_at) VALUES(?,?,?,?,?,?)",(r.get("url",""),r.get("status",""),r.get("score",0),r.get("confidence",0),r.get("domain_status",""),datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        c.commit()
+    finally: c.close()
 def history():
-    c=conn();rows=c.execute("SELECT * FROM scans ORDER BY id DESC LIMIT 100").fetchall();c.close();return[dict(x) for x in rows]
+    c=conn()
+    try:
+        rows=c.execute("SELECT id,url,status,score,confidence,domain_status,scanned_at FROM scans ORDER BY id DESC LIMIT 100").fetchall()
+        return [dict(x) for x in rows]
+    finally: c.close()
+
+@app.errorhandler(Exception)
+def handle_unexpected_error(e):
+    if isinstance(e, HTTPException):
+        return e
+    app.logger.exception("Unhandled SafeLink error")
+    if request.path.startswith("/api/"):
+        return jsonify({"error":"SafeLink could not complete this request. Check application logs for details."}),500
+    return render_template("error.html",message="SafeLink could not complete this request. Please try again."),500
 
 @app.route("/",methods=["GET","POST"])
 def index():

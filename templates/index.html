@@ -1,7 +1,4 @@
-{% if result.google_safe_browsing %}
-<div class="gsb-card">
-  <div class="gsb-head"><span>Google Safe Browsing verification</span>
-  <strong>{% if not result.google_safe_browsing.enabled %}Not configured{% elif result.google_safe_browsing.safe is false %}Threat detected{% else %}No known threat{% endif %}</strong></div>
+</strong></div>
   <div class="gsb-body">
   {% if result.google_safe_browsing.safe is false %}
     Google Safe Browsing verification matched this URL against a known unsafe-resource list.
@@ -10,14 +7,17 @@
       {% for t in result.google_safe_browsing.threats[0].types %}{{ t }}{% if not loop.last %}, {% endif %}{% endfor %}
     {% endif %}
   {% elif result.google_safe_browsing.enabled %}
-    No known Google Safe Browsing verification threat was returned for this URL.
+    Google Safe Browsing did not report a known threat for this URL. This does not prove the website is safe.
   {% else %}
     Add <code>GOOGLE_SAFE_BROWSING_API_KEY</code> to Render Environment to enable this check.
   {% endif %}
   </div>
 </div>
 {% endif %}
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SafeLink</title><link rel="stylesheet" href="/static/style.css"></head><body><nav><a class="brand" href="/">🛡️ SafeLink</a><div><a href="/">Scanner</a><a href="/history">History</a><a href="/export/csv">Export CSV</a></div></nav><main><section class="hero"><label>🔐 INTELLIGENT URL SECURITY</label><h1>Detect fake & phishing<br><em>websites before you click.</em></h1><p>SafeLink checks DNS, URL structure, public webpage content, brand impersonation and scam signals.</p><form method="POST"><input name="url" placeholder="https://example.com" value="{{result.url if result else ''}}" required><button>Scan URL →</button></form></section>{% if result %}<section class="result"><div class="top"><div><small>SCAN RESULT</small><h2>{{result.status}}</h2><p>{{result.url}}</p></div><div class="score"><strong>{{result.score}}</strong><span>/100<br>RISK</span></div></div><div class="signal">
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SafeLink</title><link rel="stylesheet" href="/static/style.css"></head><body><nav>{% if result.google_safe_browsing %}
+<div class="gsb-card">
+  <div class="gsb-head"><span>Google Safe Browsing verification</span>
+  <strong>{% if not result.google_safe_browsing.enabled %}Not configured{% elif result.google_safe_browsing.safe is false %}Threat detected{% else %}No known threat{% endif %}<a class="brand" href="/">🛡️ SafeLink</a><div><a href="/">Scanner</a><a href="/history">History</a><a href="/export/csv">Export CSV</a></div></nav><main><section class="hero"><label>🔐 INTELLIGENT URL SECURITY</label><h1>Detect fake & phishing<br><em>websites before you click.</em></h1><p>SafeLink checks DNS, URL structure, public webpage content, brand impersonation and scam signals.</p><form method="POST"><input name="url" placeholder="https://example.com" value="{{result.url if result else ''}}" required><button>Scan URL →</button></form></section>{% if result %}<section class="result"><div class="top"><div><small>SCAN RESULT</small><h2>{{result.status}}</h2><p>{{result.url}}</p></div><div class="score"><strong>{{result.score}}</strong><span>/100<br>RISK</span></div></div><div class="signal">
 <div class="signal-label"><span>Website Safety Signal</span><strong>{{result.status}}</strong></div>
 <div class="signal-track"><div class="signal-fill {% if result.score < 30 %}safe{% elif result.score < 60 %}warn{% else %}danger{% endif %}" style="width:{{result.score}}%"></div></div>
 <div class="signal-dots"><span><i class="dot green"></i> Low Risk</span><span><i class="dot yellow"></i> Suspicious</span><span><i class="dot red"></i> Dangerous</span></div>
@@ -25,7 +25,7 @@
 <div><small>WEBSITE TYPE</small><b>{{result.page.categories|join(", ") if result.page.categories else "Not classified"}}</b></div>
 <div><small>Webpage</small><b>{{result.page.status_code}}</b></div>
 <div><small>BRAND FLAGS</small><b>{{result.page.brand_impersonation|join(", ") if result.page.brand_impersonation else "None"}}</b></div>
-<div><small>CONTENT ACCESS</small><b>{{"Blocked — fallback used" if result.page.blocked else "Analyzed"}}</b></div>
+<div><small>CONTENT ACCESS</small><b>{% if result.page.content_source == "Browser (Chromium)" %}Analyzed in browser{% elif result.page.content_source == "HTTP" %}Analyzed{% elif result.page.content_source == "URL/domain fallback" %}Fallback used{% else %}Not checked{% endif %}</b></div>
 </div>
 {% if result.friendly_statuses %}
 <div class="friendly-status-grid">
@@ -52,7 +52,7 @@
   </div>
 </div>
 {% endif %}
-<div class="grid"><article><h3>🔎 Security checks</h3>{% for n,s,d in result.checks %}<div class="check"><i class="{{s}}"></i><span>{{n}}</span><small>{{d}}</small></div>{% endfor %}</article><article><h3>⚠ Why this result?</h3>{% for x in result.reasons %}<p>• {{x}}</p>{% endfor %}<p class="note">🌐 {{result.reach_detail}}</p></article></div><aside>⚠ “No Suspicious Patterns” means the domain resolved and no major heuristic warning was found. It does not guarantee trustworthiness.</aside></section>{% endif %}<section class="features"><h2>Website & URL risk analysis
+<div class="grid"><article><h3>🔎 Security checks</h3>{% for n,s,d in result.checks %}<div class="check"><i class="{{s}}"></i><span>{{n}}</span><small>{{d}}</small></div>{% endfor %}</article><article><h3>⚠ Why this result?</h3><div class="why-result">{% for x in result.reasons %}<p>• <strong>{{x}}</strong></p>{% endfor %}<p class="note"><strong>🌐 {{result.reach_detail}}</strong></p>{% if result.page.content_source %}<p class="note"><strong>Content analysis: {{result.page.content_source}}</strong></p>{% endif %}</div></article></div><aside>⚠ “No Suspicious Patterns” means the domain resolved and no major heuristic warning was found. It does not guarantee trustworthiness.</aside></section>{% endif %}<section class="features"><h2>Website & URL risk analysis
 
 <div class="feature-points">
   <div class="feature-point">

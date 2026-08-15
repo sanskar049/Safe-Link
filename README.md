@@ -37,3 +37,10 @@ SafeLink now uses a multi-step content acquisition strategy:
 3. URL/domain/reputation fallback when a site blocks both methods.
 
 This improves coverage of modern SPA/JavaScript websites, but no scanner can guarantee access to every website because some sites intentionally block automated traffic, require login, use CAPTCHAs, or restrict regions.
+
+
+## Robust content acquisition
+SafeLink now uses three layers: direct HTTP analysis, Chromium browser rendering for JavaScript-heavy/403/429/server-error pages, and URL/domain/reputation fallback when public page content cannot be read. If a requested path returns 404, the scanner also tries the site's origin as a secondary public entry point.
+
+## Render build
+Use `pip install -r requirements.txt && python -m playwright install --with-deps chromium` as the build command so the Playwright Chromium binary and Linux dependencies are installed.
