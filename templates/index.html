@@ -1,3 +1,10 @@
+{% if result.friendly_statuses %}
+<div class="friendly-status-grid">
+<div class="status-card"><div class="status-icon">🌐</div><div class="status-title">Website Address</div><div class="status-value {{ result.friendly_statuses.domain.state }}">{{ result.friendly_statuses.domain.label }}</div><div class="status-help">{{ result.friendly_statuses.domain.help }}</div><details><summary>Technical details</summary><span>{{ result.friendly_statuses.domain.technical }}</span></details></div>
+<div class="status-card"><div class="status-icon">🖥️</div><div class="status-title">Server Response</div><div class="status-value {{ result.friendly_statuses.server.state }}">{{ result.friendly_statuses.server.label }}</div><div class="status-help">{{ result.friendly_statuses.server.help }}</div><details><summary>Technical details</summary><span>{{ result.friendly_statuses.server.technical }}</span></details></div>
+<div class="status-card"><div class="status-icon">📄</div><div class="status-title">Webpage</div><div class="status-value {{ result.friendly_statuses.page.state }}">{{ result.friendly_statuses.page.label }}</div><div class="status-help">{{ result.friendly_statuses.page.help }}</div><details><summary>Technical details</summary><span>{{ result.friendly_statuses.page.technical }}</span></details></div>
+</div>
+{% endif %}
 {% if result.google_safe_browsing %}
 <div class="gsb-card">
   <div class="gsb-head"><span>Google Safe Browsing</span>

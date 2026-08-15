@@ -17,3 +17,7 @@ For Render:
 Google's v5 `urls:search` endpoint checks submitted URLs against known unsafe-resource lists. An empty `threats` result means Google returned no known threat for that URL; it is not a guarantee that the website is safe.
 
 Safe Browsing is for non-commercial use. This is an educational, non-commercial prototype.
+
+
+## Brand impersonation false-positive fix
+SafeLink no longer flags a brand just because its name appears somewhere on a page. It now requires stronger context such as a suspicious brand-containing domain, login/account/payment/verification language, or a suspicious title/context combination. Official brand domains are excluded.

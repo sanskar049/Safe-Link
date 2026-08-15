@@ -1,4 +1,4 @@
-import sqlite3,re,ipaddress,math,csv,io,socket,html as htmlmod,os
+import sqlite3,re,ipaddress,math,csv,io,socket,html as htmlmod
 from datetime import datetime
 from urllib.parse import urlparse,unquote
 from difflib import SequenceMatcher
@@ -119,17 +119,56 @@ def page_analysis(url):
         if pc>=2: result["signals"].append("Payment-related content detected")
         if dc: result["signals"].append("Discount/sale language detected")
 
-        # Brand impersonation: only flag brands in content when host is not official.
+        # Brand impersonation: do NOT flag a brand merely because its name appears
+        # in a footer, social-media link, review, article, or external link.
+        # Require stronger evidence such as brand + login/account/payment language,
+        # a brand-like title, or a suspicious host containing the brand name.
+        official_domains={
+            "amazon":{"amazon.com","amazon.in","www.amazon.com","www.amazon.in"},
+            "flipkart":{"flipkart.com","www.flipkart.com"},
+            "facebook":{"facebook.com","www.facebook.com"},
+            "instagram":{"instagram.com","www.instagram.com"},
+            "linkedin":{"linkedin.com","www.linkedin.com"},
+            "google":{"google.com","www.google.com"},
+            "microsoft":{"microsoft.com","www.microsoft.com"},
+            "apple":{"apple.com","www.apple.com"},
+            "paypal":{"paypal.com","www.paypal.com"},
+            "netflix":{"netflix.com","www.netflix.com"},
+            "youtube":{"youtube.com","www.youtube.com"},
+        }
+        brand_context_words=r"login|log in|sign in|signin|account|password|verify|verification|secure|payment|checkout|wallet|otp|one[- ]time password|bank|customer support"
+        suspicious_host_words=r"login|verify|secure|account|support|update|bonus|offer|claim|wallet|auth"
         for b in BRANDS:
-            if re.search(r"\b"+re.escape(b)+r"\b",metadata,re.I):
-                official={b+".com","www."+b+".com"}
-                if b=="amazon": official|={"amazon.in","www.amazon.in","amazon.com","www.amazon.com"}
-                if b=="flipkart": official|={"flipkart.com","www.flipkart.com"}
-                if final_host not in official and host not in official:
-                    if b not in result["brand_impersonation"]:
-                        result["brand_impersonation"].append(b)
+            brand=re.escape(b)
+            official=official_domains.get(b,{b+".com","www."+b+".com"})
+            if final_host in official or host in official:
+                continue
+
+            # A suspicious host that itself embeds the brand is strong evidence.
+            host_has_brand=bool(re.search(r"(^|[.\-_])"+brand+r"([.\-_]|$)",host,re.I))
+            host_has_suspicious=bool(re.search(suspicious_host_words,host,re.I))
+
+            # Look at visible text/title only, not raw HTML links.
+            brand_context=bool(re.search(
+                r"\b"+brand+r"\b.{0,80}(?:"+brand_context_words+r")|"+
+                r"(?:"+brand_context_words+r").{0,80}\b"+brand+r"\b",
+                visible,re.I
+            ))
+            title_brand=bool(re.search(r"\b"+brand+r"\b",result["title"],re.I))
+            title_context=bool(re.search(brand_context_words,result["title"],re.I))
+
+            # Strong impersonation evidence requires at least two signals,
+            # except a brand embedded in a suspicious-looking host.
+            strong=(host_has_brand and host_has_suspicious) or                    (brand_context and (title_brand or host_has_brand)) or                    (title_brand and title_context and host_has_suspicious)
+
+            if strong and b not in result["brand_impersonation"]:
+                result["brand_impersonation"].append(b)
+
         if result["brand_impersonation"]:
-            result["signals"].append("Possible brand impersonation: "+", ".join(result["brand_impersonation"][:4]))
+            result["signals"].append(
+                "Possible brand impersonation based on domain/page-context signals: "+
+                ", ".join(result["brand_impersonation"][:4])
+            )
 
         if "E-commerce" in result["categories"]:
             if pc>=2 and dc>=1: result["signals"].append("Shopping + payment + strong discount combination")
@@ -289,7 +328,36 @@ def analyze_url(url):
         score=min(100,max(80,score))
         status="Dangerous"
         confidence=99
-    return {"status":status,"score":score,"confidence":confidence,"reasons":reasons or ["No major suspicious URL or website-content patterns detected."],"checks":checks,"host":host,"scheme":p.scheme,"url":original,"domain_status":reach["dns"],"http_status":reach["http"],"reachable":reach["reachable"],"reach_detail":reach["detail"],"page":page,"google_safe_browsing":gsb}
+    return {"status":status,"score":score,"confidence":confidence,"reasons":reasons or ["No major suspicious URL or website-content patterns detected."],"checks":checks,"host":host,"scheme":p.scheme,"url":original,"domain_status":reach["dns"],"http_status":reach["http"],"reachable":reach["reachable"],"reach_detail":reach["detail"],"page":page,"google_safe_browsing":gsb,"friendly_statuses":friendly_statuses({"domain_status":reach["dns"],"http_status":reach["http"],"reachable":reach["reachable"],"page":page})}
+
+
+def friendly_statuses(result):
+    dns=result.get("domain_status",""); http=result.get("http_status",""); reachable=result.get("reachable",False)
+    page=result.get("page",{}) or {}; ps=page.get("status_code","")
+    domain=("Not found","danger","We could not find this website's domain address.") if dns=="Not resolved" else (
+        ("IP address used","warn","The URL uses a numeric server address instead of a normal domain name.") if dns=="IP" else
+        ("Found","pass","The website's domain address was successfully located."))
+    try: hs=int(str(http).split()[0]) if str(http).split()[0].isdigit() else None
+    except: hs=None
+    if hs==403: server=("Access restricted","warn","The website's server did not allow our scanner to access the page. This does not by itself mean the website is unsafe.")
+    elif hs==404: server=("Page not found","warn","The server responded, but the requested page could not be found.")
+    elif hs is not None and 200<=hs<300: server=("Responded","pass","The website's server accepted the request and returned a response.")
+    elif hs is not None and 300<=hs<400: server=("Redirected","warn","The website sent the request to another address.")
+    elif hs is not None and hs>=500: server=("Server problem","danger","The website's server reported an internal/server-side problem.")
+    elif reachable: server=("Responded","pass","The website's server responded to our request.")
+    else: server=("No response","warn","The website's server did not respond to our request.")
+    try: psc=int(str(ps).split()[0]) if str(ps).split()[0].isdigit() else None
+    except: psc=None
+    if page.get("blocked") or psc==403: pageui=("Access restricted","warn","The webpage could not be fully opened by our scanner. Other checks can still be used.")
+    elif psc==404: pageui=("Page not found","warn","The requested webpage was not found.")
+    elif psc is not None and 200<=psc<300: pageui=("Loaded","pass","The webpage was successfully accessed for analysis.")
+    elif psc is not None and 300<=psc<400: pageui=("Redirected","warn","The webpage redirected to another address.")
+    elif psc is not None and psc>=500: pageui=("Unavailable","danger","The webpage could not be loaded because the server reported an error.")
+    elif page.get("reachable"): pageui=("Available","pass","The webpage responded and could be checked.")
+    else: pageui=("Not checked","warn","The webpage could not be fully checked.")
+    return {"domain":{"label":domain[0],"state":domain[1],"help":domain[2],"technical":dns},
+            "server":{"label":server[0],"state":server[1],"help":server[2],"technical":http},
+            "page":{"label":pageui[0],"state":pageui[1],"help":pageui[2],"technical":ps}}
 
 def save(r):
     c=conn();c.execute("INSERT INTO scans(url,status,score,confidence,domain_status,scanned_at) VALUES(?,?,?,?,?,?)",(r["url"],r["status"],r["score"],r["confidence"],r["domain_status"],datetime.now().strftime("%Y-%m-%d %H:%M:%S")));c.commit();c.close()
