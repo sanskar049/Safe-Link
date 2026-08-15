@@ -1,4 +1,4 @@
-import sqlite3,re,ipaddress,math,csv,io,socket,html as htmlmod
+import sqlite3,re,ipaddress,math,csv,io,socket,html as htmlmod,os
 from datetime import datetime
 from urllib.parse import urlparse,unquote
 from difflib import SequenceMatcher
