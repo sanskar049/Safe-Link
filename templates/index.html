@@ -89,8 +89,8 @@
       <p>{{ result.url }}</p>
     </div>
     <div class="score">
-      <strong>{{ result.score }}</strong>
-      <span>/100<br>RISK</span>
+      <strong>{% if result.score is none %}N/A{% else %}{{ result.score }}{% endif %}</strong>
+      <span>{% if result.score is none %}RISK NOT<br>ASSESSABLE{% else %}/100<br>RISK{% endif %}</span>
     </div>
   </div>
 
@@ -100,11 +100,13 @@
       <strong>{{ result.status }}</strong>
     </div>
     <div class="signal-track">
+      {% if result.score is not none %}
       <div class="signal-fill
         {% if result.score < 20 %}safe
         {% elif result.score < 50 %}warn
         {% else %}danger{% endif %}"
         style="width:{{ result.score }}%"></div>
+      {% endif %}
     </div>
     <div class="signal-dots">
       <span><i class="dot green"></i> Low Risk</span>
@@ -117,8 +119,8 @@
   <div class="analysis-summary">
     <div>
       <small>SECURITY RISK</small>
-      <b>{{ result.score }}/100</b>
-      <span>Based on security evidence, not website category.</span>
+      <b>{% if result.score is none %}Not assessable{% else %}{{ result.score }}/100{% endif %}</b>
+      <span>{% if result.score is none %}The domain could not be reached, so a cyber-risk score cannot be calculated.{% else %}Based on security evidence, not website category.{% endif %}</span>
     </div>
     <div>
       <small>CONFIDENCE</small>
@@ -269,9 +271,14 @@
   {% endif %}
 
   <aside>
-    ⚠ A low risk score means that SafeLink did not find strong security indicators
-    in the evidence available during this scan. It is not a guarantee that a website
-    is legitimate or safe.
+    {% if result.score is none %}
+      ⚠ The domain could not be resolved. “Not assessable” means SafeLink could not
+      obtain enough live evidence to calculate a meaningful cyber-risk score.
+    {% else %}
+      ⚠ A low risk score means that SafeLink did not find strong security indicators
+      in the evidence available during this scan. It is not a guarantee that a website
+      is legitimate or safe.
+    {% endif %}
   </aside>
 </section>
 {% endif %}

@@ -731,24 +731,42 @@ def analyze_url(url):
             "content_source": "Not checked",
             "detail": "Page analysis was skipped because the domain did not resolve."
         }
-        checks.append((
-            "Google Safe Browsing",
-            "pass" if gsb.get("enabled") and gsb.get("safe") else ("warn" if not gsb.get("enabled") else "danger"),
-            "No known threat" if gsb.get("enabled") and gsb.get("safe") else (
-                "Not configured" if not gsb.get("enabled") else "Threat detected"
-            )
-        ))
-        result = {
-            "status": "Domain Does Not Exist",
-            "invalid_url": False,
-            "domain_not_resolved": True,
-            "score": 0,
-            "confidence": 98,
-            "reasons": [
+
+        # DNS failure is not itself a cyber-risk score. But a confirmed
+        # Google Safe Browsing threat must still produce a dangerous result.
+        threat_found = gsb.get("safe") is False
+        if threat_found:
+            checks.append(("Google Safe Browsing", "danger", "Threat detected"))
+            score = 90
+            status = "Dangerous"
+            confidence = 98
+            reasons = [
+                "The domain could not be resolved through DNS.",
+                "Google Safe Browsing reports a known threat for this URL.",
+                "The server and webpage could not be checked."
+            ]
+        else:
+            checks.append((
+                "Google Safe Browsing",
+                "pass" if gsb.get("enabled") else "warn",
+                "No known threat" if gsb.get("enabled") else "Not configured"
+            ))
+            score = None
+            status = "Domain Does Not Exist"
+            confidence = 98
+            reasons = [
                 "The domain could not be resolved through DNS.",
                 "The server and webpage could not be checked.",
-                "A DNS failure does not prove that a website is malicious."
-            ],
+                "Risk score is not assessable because the domain could not be reached."
+            ]
+
+        result = {
+            "status": status,
+            "invalid_url": False,
+            "domain_not_resolved": True,
+            "score": score,
+            "confidence": confidence,
+            "reasons": reasons,
             "checks": checks,
             "host": host,
             "scheme": p.scheme,
@@ -896,6 +914,28 @@ def analyze_url(url):
         "content_source": "Not checked",
         "detail": "Page analysis skipped because the domain did not resolve."
     }
+
+    # If the initial reachability check already knows the HTTP status, do not
+    # downgrade a later page-analysis exception to generic "URL/domain fallback".
+    known_http = safe_int(reach.get("http"))
+    if page.get("content_source") == "URL/domain fallback" and known_http is not None:
+        page["status_code"] = str(known_http)
+        if known_http in (401, 403, 429):
+            page["content_source"] = "Access restricted"
+            page["blocked"] = True
+            page["detail"] = (
+                f"The server returned HTTP {known_http}; the webpage could not be "
+                "fully read by the scanner."
+            )
+        elif known_http == 404:
+            page["content_source"] = "HTTP"
+            page["detail"] = "The requested webpage returned HTTP 404."
+        elif known_http >= 500:
+            page["content_source"] = "Server unavailable"
+            page["detail"] = f"The website returned HTTP {known_http}."
+        else:
+            page["content_source"] = "HTTP"
+            page["detail"] = "The server responded, but readable webpage content was limited."
 
     categories = page.get("categories", [])
     if categories:
