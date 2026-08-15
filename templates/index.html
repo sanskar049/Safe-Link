@@ -5,6 +5,48 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>SafeLink — URL Risk Analyzer</title>
   <link rel="stylesheet" href="/static/style.css">
+
+<style>
+.analysis-summary{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:14px;
+  margin:18px 0;
+}
+.analysis-summary>div{
+  background:rgba(255,255,255,.72);
+  border:1px solid rgba(20,40,80,.08);
+  border-radius:16px;
+  padding:16px 18px;
+}
+.analysis-summary small{display:block;letter-spacing:.08em;font-weight:700;opacity:.65;margin-bottom:7px}
+.analysis-summary b{display:block;font-size:20px}
+.analysis-summary span{display:block;font-size:12px;line-height:1.45;opacity:.65;margin-top:5px}
+.signal-dots{display:flex;flex-wrap:wrap;gap:14px}
+.dot.orange{background:#f59e0b}
+.inline-error{
+  margin-top:12px;
+  padding:12px 14px;
+  border-radius:12px;
+  display:flex;
+  align-items:center;
+  gap:12px;
+  flex-wrap:wrap;
+}
+.inline-error span{flex:1;min-width:220px}
+.inline-error button{
+  border:0;
+  border-radius:9px;
+  padding:8px 12px;
+  cursor:pointer;
+}
+.gsb-card strong{font-weight:800}
+.why-result p strong{font-weight:800}
+@media (max-width:760px){
+  .analysis-summary{grid-template-columns:1fr}
+}
+</style>
+
 </head>
 <body>
 <nav>
@@ -20,9 +62,11 @@
 <section class="hero">
   <label>🔐 INTELLIGENT URL SECURITY</label>
   <h1>Detect fake &amp; phishing<br><em>websites before you click.</em></h1>
-  <p>SafeLink checks URL structure, DNS, webpage content, brand impersonation, server response and security signals.</p>
+  <p>SafeLink combines URL structure, DNS, webpage content, brand signals, server response and reputation evidence.</p>
+
   <form method="POST" class="scan-form">
-    <input name="url" placeholder="https://example.com" value="{{ result.url if result else '' }}" required>
+    <input name="url" placeholder="https://example.com"
+           value="{{ result.url if result else '' }}" required>
     <button type="submit">Scan URL →</button>
   </form>
 
@@ -37,19 +81,55 @@
 
 {% if result and not result.invalid_url %}
 <section class="result">
+
   <div class="top">
     <div>
       <small>SCAN RESULT</small>
       <h2>{{ result.status }}</h2>
       <p>{{ result.url }}</p>
     </div>
-    <div class="score"><strong>{{ result.score }}</strong><span>/100<br>RISK</span></div>
+    <div class="score">
+      <strong>{{ result.score }}</strong>
+      <span>/100<br>RISK</span>
+    </div>
   </div>
 
   <div class="signal">
-    <div class="signal-label"><span>Website Safety Signal</span><strong>{{ result.status }}</strong></div>
-    <div class="signal-track"><div class="signal-fill {% if result.score < 30 %}safe{% elif result.score < 60 %}warn{% else %}danger{% endif %}" style="width:{{ result.score }}%"></div></div>
-    <div class="signal-dots"><span><i class="dot green"></i> Low Risk</span><span><i class="dot yellow"></i> Suspicious</span><span><i class="dot red"></i> Dangerous</span></div>
+    <div class="signal-label">
+      <span>Website Safety Signal</span>
+      <strong>{{ result.status }}</strong>
+    </div>
+    <div class="signal-track">
+      <div class="signal-fill
+        {% if result.score < 20 %}safe
+        {% elif result.score < 50 %}warn
+        {% else %}danger{% endif %}"
+        style="width:{{ result.score }}%"></div>
+    </div>
+    <div class="signal-dots">
+      <span><i class="dot green"></i> Low Risk</span>
+      <span><i class="dot yellow"></i> Suspicious</span>
+      <span><i class="dot orange"></i> High Risk</span>
+      <span><i class="dot red"></i> Dangerous</span>
+    </div>
+  </div>
+
+  <div class="analysis-summary">
+    <div>
+      <small>SECURITY RISK</small>
+      <b>{{ result.score }}/100</b>
+      <span>Based on security evidence, not website category.</span>
+    </div>
+    <div>
+      <small>CONFIDENCE</small>
+      <b>{{ result.confidence }}%</b>
+      <span>Confidence depends on how much evidence was available.</span>
+    </div>
+    <div>
+      <small>WEBSITE TYPE</small>
+      <b>{{ result.page.categories|join(", ") if result.page.categories else "Not classified" }}</b>
+      <span>Category is separate from cyber-risk.</span>
+    </div>
   </div>
 
   <div class="stats">
@@ -59,10 +139,30 @@
   </div>
 
   <div class="content-summary">
-    <div><small>WEBSITE TYPE</small><b>{{ result.page.categories|join(", ") if result.page.categories else "Not classified" }}</b></div>
-    <div><small>WEBPAGE</small><b>{{ result.page.status_code }}</b></div>
-    <div><small>BRAND FLAGS</small><b>{{ result.page.brand_impersonation|join(", ") if result.page.brand_impersonation else "None" }}</b></div>
-    <div><small>CONTENT ACCESS</small><b>{{ result.content_analysis_label }}</b></div>
+    <div>
+      <small>WEBPAGE</small>
+      <b>{{ result.page.status_code }}</b>
+    </div>
+    <div>
+      <small>BRAND FLAGS</small>
+      <b>{{ result.page.brand_impersonation|join(", ") if result.page.brand_impersonation else "None" }}</b>
+    </div>
+    <div>
+      <small>CONTENT ACCESS</small>
+      <b>{{ result.content_analysis_label }}</b>
+    </div>
+    <div>
+      <small>ANALYSIS SCOPE</small>
+      <b>
+        {% if result.page.content_source == "HTTP" %}
+          URL + page content
+        {% elif result.page.content_source == "Access restricted" %}
+          URL + limited server evidence
+        {% else %}
+          URL + domain evidence
+        {% endif %}
+      </b>
+    </div>
   </div>
 
   {% if result.friendly_statuses %}
@@ -70,23 +170,40 @@
     <div class="status-card">
       <div class="status-icon">🌐</div>
       <div class="status-title">DOMAIN STATUS</div>
-      <div class="status-value {{ result.friendly_statuses.domain.state }}">{{ result.friendly_statuses.domain.label }}</div>
+      <div class="status-value {{ result.friendly_statuses.domain.state }}">
+        {{ result.friendly_statuses.domain.label }}
+      </div>
       <div class="status-help">{{ result.friendly_statuses.domain.help }}</div>
-      <details><summary>Technical details</summary><span>{{ result.friendly_statuses.domain.technical }}</span></details>
+      <details>
+        <summary>Technical details</summary>
+        <span>{{ result.friendly_statuses.domain.technical }}</span>
+      </details>
     </div>
+
     <div class="status-card">
       <div class="status-icon">🖥️</div>
       <div class="status-title">SERVER RESPONSE</div>
-      <div class="status-value {{ result.friendly_statuses.server.state }}">{{ result.friendly_statuses.server.label }}</div>
+      <div class="status-value {{ result.friendly_statuses.server.state }}">
+        {{ result.friendly_statuses.server.label }}
+      </div>
       <div class="status-help">{{ result.friendly_statuses.server.help }}</div>
-      <details><summary>Technical details</summary><span>{{ result.friendly_statuses.server.technical }}</span></details>
+      <details>
+        <summary>Technical details</summary>
+        <span>{{ result.friendly_statuses.server.technical }}</span>
+      </details>
     </div>
+
     <div class="status-card">
       <div class="status-icon">📄</div>
       <div class="status-title">WEBPAGE</div>
-      <div class="status-value {{ result.friendly_statuses.page.state }}">{{ result.friendly_statuses.page.label }}</div>
+      <div class="status-value {{ result.friendly_statuses.page.state }}">
+        {{ result.friendly_statuses.page.label }}
+      </div>
       <div class="status-help">{{ result.friendly_statuses.page.help }}</div>
-      <details><summary>Technical details</summary><span>{{ result.friendly_statuses.page.technical }}</span></details>
+      <details>
+        <summary>Technical details</summary>
+        <span>{{ result.friendly_statuses.page.technical }}</span>
+      </details>
     </div>
   </div>
   {% endif %}
@@ -95,13 +212,20 @@
     <article>
       <h3>🔎 Security checks</h3>
       {% for n,s,d in result.checks %}
-      <div class="check"><i class="{{ s }}"></i><span>{{ n }}</span><small>{{ d }}</small></div>
+      <div class="check">
+        <i class="{{ s }}"></i>
+        <span>{{ n }}</span>
+        <small>{{ d }}</small>
+      </div>
       {% endfor %}
     </article>
+
     <article>
       <h3>⚠ Why this result?</h3>
       <div class="why-result">
-        {% for x in result.reasons %}<p>• <strong>{{ x }}</strong></p>{% endfor %}
+        {% for x in result.reasons %}
+        <p>• <strong>{{ x }}</strong></p>
+        {% endfor %}
         <p class="note"><strong>🌐 {{ result.reach_detail }}</strong></p>
         <p class="note"><strong>{{ result.content_analysis_label }}</strong></p>
       </div>
@@ -112,40 +236,103 @@
   <div class="gsb-card">
     <div class="gsb-head">
       <span>🛡️ Google Safe Browsing</span>
-      <strong>{% if not result.google_safe_browsing.enabled %}Verification unavailable{% elif result.google_safe_browsing.safe is false %}Threat detected{% else %}No known threat{% endif %}</strong>
+      <strong>
+        {% if not result.google_safe_browsing.enabled %}
+          Verification unavailable
+        {% elif result.google_safe_browsing.safe is false %}
+          Threat detected
+        {% else %}
+          No known threat
+        {% endif %}
+      </strong>
     </div>
+
     <div class="gsb-body">
       {% if result.google_safe_browsing.safe is false %}
+        <strong>Known threat detected.</strong>
         Google Safe Browsing matched this URL against a known unsafe-resource list.
         {% if result.google_safe_browsing.threats %}
           <br><b>Threat type:</b>
-          {% for t in result.google_safe_browsing.threats[0].types %}{{ t }}{% if not loop.last %}, {% endif %}{% endfor %}
+          {% for t in result.google_safe_browsing.threats[0].types %}
+            {{ t }}{% if not loop.last %}, {% endif %}
+          {% endfor %}
         {% endif %}
       {% elif result.google_safe_browsing.enabled %}
-        Google Safe Browsing did not report a known threat for this URL. This does not prove the website is safe.
+        <strong>No known threat reported.</strong>
+        This does not prove that the website is completely safe.
       {% else %}
-        Add <code>GOOGLE_SAFE_BROWSING_API_KEY</code> to Render Environment to enable this check.
+        Google Safe Browsing is not configured.
+        Add <code>GOOGLE_SAFE_BROWSING_API_KEY</code> to the Render environment to enable it.
       {% endif %}
     </div>
   </div>
   {% endif %}
 
-  <aside>⚠ “No Suspicious Patterns” means no major warning was found by the checks available to SafeLink. It does not guarantee trustworthiness.</aside>
+  <aside>
+    ⚠ A low risk score means that SafeLink did not find strong security indicators
+    in the evidence available during this scan. It is not a guarantee that a website
+    is legitimate or safe.
+  </aside>
 </section>
 {% endif %}
 
 <section class="features">
   <h2>Website &amp; URL risk analysis</h2>
+
   <div class="feature-points">
-    <div class="feature-point"><div class="feature-icon">🔍</div><div><h3>URL &amp; Domain Analysis</h3><p>Checks URL structure, DNS resolution and domain-level risk signals.</p></div></div>
-    <div class="feature-point"><div class="feature-icon">🌐</div><div><h3>Webpage &amp; Content Analysis</h3><p>Analyzes accessible webpage content for suspicious, scam, gambling and high-risk signals.</p></div></div>
-    <div class="feature-point"><div class="feature-icon">🎭</div><div><h3>Brand Impersonation Detection</h3><p>Detects suspicious brand usage and look-alike domains while reducing false positives.</p></div></div>
-    <div class="feature-point"><div class="feature-icon">🛡️</div><div><h3>Google Safe Browsing</h3><p>Checks the submitted URL against Google's known unsafe-resource lists.</p></div></div>
-    <div class="feature-point"><div class="feature-icon">🚨</div><div><h3>Multi-Layer Risk Score</h3><p>Combines independent signals into an explainable security risk result.</p></div></div>
-    <div class="feature-point"><div class="feature-icon">📊</div><div><h3>Scan History &amp; Reports</h3><p>Stores previous scans and supports CSV export for project demonstrations.</p></div></div>
+    <div class="feature-point">
+      <div class="feature-icon">🔍</div>
+      <div>
+        <h3>URL &amp; Domain Analysis</h3>
+        <p>Checks DNS, HTTPS, IP usage, URL structure, obfuscation, subdomains, TLDs and hostname anomalies.</p>
+      </div>
+    </div>
+
+    <div class="feature-point">
+      <div class="feature-icon">🌐</div>
+      <div>
+        <h3>Webpage &amp; Content Analysis</h3>
+        <p>Analyzes readable public webpage content for phishing, scam, payment, gambling and streaming-related signals.</p>
+      </div>
+    </div>
+
+    <div class="feature-point">
+      <div class="feature-icon">🎭</div>
+      <div>
+        <h3>Brand Impersonation &amp; Typosquatting</h3>
+        <p>Looks for suspicious brand/domain combinations instead of treating ordinary brand mentions as impersonation.</p>
+      </div>
+    </div>
+
+    <div class="feature-point">
+      <div class="feature-icon">🛡️</div>
+      <div>
+        <h3>Google Safe Browsing</h3>
+        <p>Uses Google's known unsafe-resource reputation signal when the API is configured.</p>
+      </div>
+    </div>
+
+    <div class="feature-point">
+      <div class="feature-icon">⚖️</div>
+      <div>
+        <h3>Evidence-Based Risk Score</h3>
+        <p>Combines correlated security indicators. Website category alone does not make a site dangerous.</p>
+      </div>
+    </div>
+
+    <div class="feature-point">
+      <div class="feature-icon">📊</div>
+      <div>
+        <h3>Confidence &amp; Explainable Results</h3>
+        <p>Shows why the score was produced and lowers confidence when page content cannot be accessed.</p>
+      </div>
+    </div>
   </div>
 </section>
 </main>
-<footer>SafeLink • Intelligent Fake Website &amp; URL Detection System • BTech Project</footer>
+
+<footer>
+  SafeLink • Intelligent Fake Website &amp; URL Detection System • BTech Project
+</footer>
 </body>
 </html>
