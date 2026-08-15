@@ -335,100 +335,116 @@ def page_analysis(url):
         "Accept-Language": "en-IN,en;q=0.9"
     }
 
-    # Domain-only category hints are kept as classification, not security risk.
     domain_text = (host + " " + p.path).lower()
+    domain_categories = []
     if any(x in domain_text for x in FANTASY_DOMAIN_TERMS):
-        result["categories"].append("Fantasy sports / paid contests")
+        domain_categories.append("Fantasy sports / paid contests")
     if any(x in domain_text for x in GAMBLING_TERMS):
-        result["categories"].append("Gambling / betting")
+        domain_categories.append("Gambling / betting")
     if any(x in domain_text for x in PIRACY_DOMAIN_TERMS):
-        result["categories"].append("Potentially unauthorized streaming / piracy")
+        domain_categories.append("Potentially unauthorized streaming / piracy")
+    result["categories"] = domain_categories
 
     try:
-        r = requests.get(url, headers=headers, allow_redirects=True, timeout=10)
-        result["status_code"] = str(r.status_code)
-        result["reachable"] = True
+        r = requests.get(
+            url,
+            headers=headers,
+            allow_redirects=True,
+            timeout=10,
+            stream=True
+        )
+        code = r.status_code
         final_url = r.url
         final_host = (urlparse(final_url).hostname or "").lower()
         content_type = (r.headers.get("Content-Type") or "").lower()
         page = r.text[:700000]
         r.close()
 
+        result["status_code"] = str(code)
+        result["reachable"] = True
+
         title_match = re.search(r"<title[^>]*>(.*?)</title>", page, re.I | re.S)
         title = re.sub(
-            r"\s+", " ",
-            htmlmod.unescape(title_match.group(1))
+            r"\s+", " ", htmlmod.unescape(title_match.group(1))
         ).strip()[:200] if title_match else ""
 
-        # A deep-link 404 does not mean the entire site is unavailable.
-        if r.status_code == 404 and p.path not in ("", "/"):
+        # A deep-link 404 can still have a working site root.
+        if code == 404 and p.path not in ("", "/"):
             try:
                 origin = f"{p.scheme}://{p.netloc}/"
                 rr = requests.get(origin, headers=headers, allow_redirects=True, timeout=10)
-                if 200 <= rr.status_code < 300 and len(rr.text.strip()) >= 80:
-                    page = rr.text[:700000]
-                    title_match = re.search(r"<title[^>]*>(.*?)</title>", page, re.I | re.S)
-                    title = re.sub(
-                        r"\s+", " ", htmlmod.unescape(title_match.group(1))
-                    ).strip()[:200] if title_match else title
-                    final_host = (urlparse(rr.url).hostname or "").lower()
-                    result["status_code"] = str(rr.status_code)
-                    result["content_source"] = "HTTP"
-                    result["detail"] = (
-                        "The requested path returned 404, but the site's homepage "
-                        "was available for analysis."
+                root_code = rr.status_code
+                root_page = rr.text[:700000]
+                root_url = rr.url
+                if 200 <= root_code < 300 and len(root_page.strip()) >= 80:
+                    root_title_match = re.search(r"<title[^>]*>(.*?)</title>", root_page, re.I | re.S)
+                    root_title = re.sub(
+                        r"\s+", " ", htmlmod.unescape(root_title_match.group(1))
+                    ).strip()[:200] if root_title_match else title
+                    analyzed, _ = analyze_page_content(root_page, root_title, (urlparse(root_url).hostname or "").lower())
+                    analyzed["categories"] = list(dict.fromkeys(domain_categories + analyzed.get("categories", [])))
+                    analyzed["status_code"] = str(root_code)
+                    analyzed["content_source"] = "HTTP"
+                    analyzed["detail"] = (
+                        f"The requested path returned HTTP 404, but the site homepage "
+                        f"responded with HTTP {root_code} and was analyzed."
                     )
-                    domain_categories = list(result.get("categories", []))
-                    analyzed, chars = analyze_page_content(page, title, final_host)
-                    result.update(analyzed)
-                    result["categories"] = list(dict.fromkeys(
-                        domain_categories + analyzed.get("categories", [])
-                    ))
-                    result["content_source"] = "HTTP"
-                    result["reachable"] = True
-                    return result
+                    return analyzed
                 rr.close()
             except requests.RequestException:
                 pass
 
-        # Don't label a 403/429/5xx as a content analysis failure if we at least
-        # received a response. We clearly report access limitations instead.
-        if content_type.startswith("text/") or "html" in content_type:
-            if len(page.strip()) >= 80 and r.status_code < 500 and r.status_code != 403:
-                domain_categories = list(result.get("categories", []))
-                analyzed, chars = analyze_page_content(page, title, final_host)
-                result.update(analyzed)
-                result["categories"] = list(dict.fromkeys(
-                    domain_categories + analyzed.get("categories", [])
-                ))
-                result["content_source"] = "HTTP"
-                result["reachable"] = True
-                return result
+        # Analyze actual readable HTML when we have it.
+        if ("html" in content_type or "text/" in content_type) and len(page.strip()) >= 80:
+            analyzed, _ = analyze_page_content(page, title, final_host)
+            analyzed["categories"] = list(dict.fromkeys(domain_categories + analyzed.get("categories", [])))
+            analyzed["status_code"] = str(code)
+            analyzed["reachable"] = True
+            if code in (401, 403, 429):
+                analyzed["blocked"] = True
+                analyzed["content_source"] = "Access restricted"
+                analyzed["detail"] = (
+                    f"The server returned HTTP {code}; some or all page content "
+                    "may be restricted to automated scanners."
+                )
+            elif code >= 500:
+                analyzed["content_source"] = "Server unavailable"
+                analyzed["detail"] = f"The website returned HTTP {code}."
+            elif code == 404:
+                analyzed["content_source"] = "HTTP"
+                analyzed["detail"] = "The requested webpage returned HTTP 404."
+            return analyzed
 
-        if r.status_code in (401, 403, 429):
+        # Explicit availability states. These are not "URL/domain fallback" because
+        # the server did respond and we know the HTTP result.
+        if code in (401, 403, 429):
             result["blocked"] = True
             result["content_source"] = "Access restricted"
             result["detail"] = (
-                f"The website returned HTTP {r.status_code}; public page content "
-                "could not be fully read by the scanner."
+                f"The server returned HTTP {code}; the webpage could not be fully "
+                "read by the scanner."
             )
-        elif r.status_code >= 500:
-            result["content_source"] = "Server unavailable"
+        elif code == 404:
+            result["content_source"] = "HTTP"
             result["detail"] = (
-                f"The website returned HTTP {r.status_code}; content analysis "
-                "could not be completed."
+                "The requested webpage returned HTTP 404. The domain itself "
+                "resolved, but this page could not be found."
             )
+        elif code >= 500:
+            result["content_source"] = "Server unavailable"
+            result["detail"] = f"The server returned HTTP {code}; page analysis was unavailable."
         else:
             result["content_source"] = "HTTP"
-            result["detail"] = "The page responded, but readable HTML content was limited."
+            result["detail"] = "The server responded, but readable webpage content was limited."
 
         return result
 
-    except requests.RequestException as exc:
+    except requests.RequestException:
+        # A true network/request failure, rather than a normal 403/404 response.
         result["content_source"] = "URL/domain fallback"
         result["detail"] = (
-            "Page content could not be retrieved. URL, DNS and reputation checks "
-            "were used instead."
+            "Page content could not be retrieved. URL, DNS and reputation "
+            "checks were used instead."
         )
         result["blocked"] = True
         return result
@@ -478,18 +494,21 @@ def content_analysis_label(page):
     page = page or {}
     source = page.get("content_source", "")
     status = safe_int(page.get("status_code"))
+
     if source == "HTTP" and status is not None and 200 <= status < 300:
         return "Page content analyzed"
-    if source == "Access restricted":
+    if source in ("Access restricted", "403"):
         return f"Page access restricted (HTTP {status})" if status else "Page access restricted"
-    if source == "Server unavailable":
+    if source in ("Server unavailable", "5xx"):
         return f"Server unavailable (HTTP {status})" if status else "Server unavailable"
     if status == 404:
         return "Page not found (HTTP 404)"
     if source == "URL/domain fallback":
         return "Page content unavailable — URL/domain checks used"
     if source == "HTTP":
-        return "Page responded; content was limited"
+        return "Page responded, but readable content was limited"
+    if source == "Not checked":
+        return "Page was not checked"
     return "Page could not be fully analyzed"
 
 
@@ -646,7 +665,8 @@ def analyze_url(url):
         "confidence": 0,
         "reasons": [],
         "checks": [],
-        "url": original
+        "url": original,
+        "domain_not_resolved": False
     }
 
     if not original:
@@ -701,14 +721,56 @@ def analyze_url(url):
     )
 
     if reach["dns"] == "Not resolved":
-        add(12, "Domain could not be resolved by DNS")
-    elif reach["dns"] == "Resolved":
-        evidence += 1
-    checks.append((
-        "Domain / DNS",
-        "danger" if reach["dns"] == "Not resolved" else "pass",
-        reach["dns"]
-    ))
+        checks.append(("Domain / DNS", "danger", "Not resolved"))
+        gsb = google_safe_browsing_check(normalized)
+        page = {
+            "reachable": False, "signals": [], "brand_impersonation": [],
+            "categories": [], "forms": 0, "password_fields": 0,
+            "payment_signals": 0, "policy_signals": 0, "discount_signals": 0,
+            "phishing_signals": 0, "status_code": "Not checked",
+            "content_source": "Not checked",
+            "detail": "Page analysis was skipped because the domain did not resolve."
+        }
+        checks.append((
+            "Google Safe Browsing",
+            "pass" if gsb.get("enabled") and gsb.get("safe") else ("warn" if not gsb.get("enabled") else "danger"),
+            "No known threat" if gsb.get("enabled") and gsb.get("safe") else (
+                "Not configured" if not gsb.get("enabled") else "Threat detected"
+            )
+        ))
+        result = {
+            "status": "Domain Does Not Exist",
+            "invalid_url": False,
+            "domain_not_resolved": True,
+            "score": 0,
+            "confidence": 98,
+            "reasons": [
+                "The domain could not be resolved through DNS.",
+                "The server and webpage could not be checked.",
+                "A DNS failure does not prove that a website is malicious."
+            ],
+            "checks": checks,
+            "host": host,
+            "scheme": p.scheme,
+            "url": original,
+            "domain_status": "Not resolved",
+            "http_status": "Not checked",
+            "reachable": False,
+            "reach_detail": "The domain could not be resolved by DNS.",
+            "page": page,
+            "content_analysis_label": "Page was not checked",
+            "google_safe_browsing": gsb,
+            "friendly_statuses": friendly_statuses({
+                "domain_status": "Not resolved",
+                "http_status": "Not checked",
+                "reachable": False,
+                "page": page
+            })
+        }
+        return result
+
+    evidence += 1
+    checks.append(("Domain / DNS", "pass", "Resolved"))
 
     if p.scheme == "https":
         checks.append(("HTTPS", "pass", "Enabled"))
@@ -836,9 +898,20 @@ def analyze_url(url):
     }
 
     categories = page.get("categories", [])
-    # Never add risk merely because a site belongs to a legal/illegal content category.
     if categories:
         evidence += 1
+
+    # Content/category risk is separate from malware/phishing risk, but it should not
+    # disappear into a 0/100 "Low Risk" result. These modest weights make the result
+    # informative without claiming that a category is inherently malicious.
+    if "Potentially unauthorized streaming / piracy" in categories:
+        add(15, "Website category shows multiple signals associated with potentially unauthorized streaming/piracy")
+    elif "Gambling / betting" in categories:
+        add(10, "Website category shows gambling/betting content")
+    elif "Fantasy sports / paid contests" in categories:
+        add(6, "Website category shows fantasy sports or paid-contest content")
+    elif "E-commerce" in categories:
+        add(4, "Website category shows e-commerce activity")
 
     page_brands = page.get("brand_impersonation", [])
     if page_brands:
