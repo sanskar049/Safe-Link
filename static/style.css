@@ -35,3 +35,43 @@ footer{text-align:center;padding:30px;color:#71859f;border-top:1px solid #dce7f3
 .gsb-body{margin-top:8px;color:#273444;font-size:13px;line-height:1.5}
 .gsb-body code{background:#eef4fb;padding:2px 5px;border-radius:4px}
 .friendly-status-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:18px 0}.status-card{background:#fff;border:1px solid #d7e1ec;border-radius:14px;padding:16px}.status-icon{font-size:21px}.status-title{font-size:12px;font-weight:700;text-transform:uppercase;color:#667586}.status-value{font-size:19px;font-weight:800;margin:6px 0 8px}.status-value.pass{color:#249158}.status-value.warn{color:#b77a16}.status-value.danger{color:#c33e3e}.status-help{font-size:12px;line-height:1.45;color:#394a5d;min-height:52px}.status-card details{margin-top:10px;font-size:11px;color:#738195}.status-card summary{cursor:pointer;font-weight:600}.status-card details span{display:block;margin-top:5px;font-family:monospace}@media(max-width:800px){.friendly-status-grid{grid-template-columns:1fr}}
+.friendly-status-grid{margin:0 0 20px}
+.friendly-status-grid .status-card{min-height:150px}
+.friendly-status-grid details{margin-top:8px}
+
+/* Emphasize the explanation shown under "Why this result?" */
+.why-result,
+.why-result p,
+.why-result li,
+.why-result .reason,
+.why-this-result,
+.why-this-result p,
+.why-this-result li {
+    font-weight: 700;
+}
+
+
+/* Google Safe Browsing result — positioned below the main status summary */
+.google-sb-card{
+    margin:18px 0 22px;
+    padding:18px 20px;
+    border:1px solid #dbe7f5;
+    border-radius:14px;
+    background:#f8fbff;
+}
+.google-sb-title{
+    font-size:18px;
+    font-weight:800;
+    margin-bottom:8px;
+}
+.google-sb-status{
+    font-weight:800;
+    font-size:16px;
+    margin-bottom:5px;
+}
+.google-sb-status.safe{color:#167a45}
+.google-sb-status.danger{color:#b42318}
+.google-sb-help,.google-sb-details{
+    font-weight:600;
+    line-height:1.5;
+}
