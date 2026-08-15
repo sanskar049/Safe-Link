@@ -21,3 +21,19 @@ Safe Browsing is for non-commercial use. This is an educational, non-commercial 
 
 ## Brand impersonation false-positive fix
 SafeLink no longer flags a brand just because its name appears somewhere on a page. It now requires stronger context such as a suspicious brand-containing domain, login/account/payment/verification language, or a suspicious title/context combination. Official brand domains are excluded.
+
+
+## Final UI update
+The homepage feature section now reflects the current SafeLink architecture:
+URL/domain analysis, webpage/category analysis, brand impersonation detection, Google Safe Browsing, multi-layer risk scoring, and scan history/reports.
+
+Result labels are user-friendly: Website Address, Server Response, and Webpage. Technical HTTP/DNS values remain available under Technical details. The Why this result explanations are emphasized for visibility.
+
+
+## Browser-rendered content analysis
+SafeLink now uses a multi-step content acquisition strategy:
+1. Direct HTTP analysis.
+2. Chromium/Playwright rendering for JavaScript-heavy or 403/blocked pages.
+3. URL/domain/reputation fallback when a site blocks both methods.
+
+This improves coverage of modern SPA/JavaScript websites, but no scanner can guarantee access to every website because some sites intentionally block automated traffic, require login, use CAPTCHAs, or restrict regions.
