@@ -8,7 +8,7 @@ import socket
 import html as htmlmod
 import os
 from datetime import datetime
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse, unquote, urljoin
 from difflib import SequenceMatcher
 
 from flask import Flask, render_template, request, jsonify, Response
@@ -76,6 +76,11 @@ PIRACY_DOMAIN_TERMS = [
 # content was analyzed. This prevents JavaScript-only shells from being shown as
 # successfully analyzed when the actual webpage text was never available.
 MIN_ANALYZABLE_TEXT = 80
+MAX_REDIRECTS = 5
+
+
+class UnsafeScanTarget(Exception):
+    """Raised when a scan would reach a local or private network address."""
 
 
 def conn():
@@ -165,7 +170,70 @@ def detect_typosquatting(host):
     return list(dict.fromkeys(found))
 
 
+def validate_public_target(url):
+    """Reject local/private targets before the scanner makes an HTTP request."""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if parsed.scheme not in {"http", "https"} or not host:
+        raise UnsafeScanTarget("Only public HTTP(S) URLs can be scanned.")
+    if host == "localhost" or host.endswith(".localhost") or host.endswith(".local"):
+        raise UnsafeScanTarget("Local network addresses cannot be scanned.")
+
+    try:
+        if not ipaddress.ip_address(host).is_global:
+            raise UnsafeScanTarget("Private or reserved IP addresses cannot be scanned.")
+        return
+    except ValueError:
+        pass
+
+    try:
+        addresses = {
+            item[4][0] for item in socket.getaddrinfo(host, None)
+        }
+    except (socket.gaierror, OSError):
+        # Keep DNS failures as normal scan results rather than validation errors.
+        return
+
+    if any(not ipaddress.ip_address(address).is_global for address in addresses):
+        raise UnsafeScanTarget("The hostname resolves to a private or reserved address.")
+
+
+def safe_get(url, *, headers, timeout, stream=False):
+    """Fetch a public page while validating every redirect destination."""
+    current_url = url
+    for _ in range(MAX_REDIRECTS + 1):
+        validate_public_target(current_url)
+        response = requests.get(
+            current_url,
+            headers=headers,
+            allow_redirects=False,
+            timeout=timeout,
+            stream=stream
+        )
+        if not response.is_redirect:
+            return response
+
+        location = response.headers.get("Location")
+        if not location:
+            return response
+        response.close()
+        current_url = urljoin(current_url, location)
+
+    raise requests.TooManyRedirects(
+        f"SafeLink stopped after {MAX_REDIRECTS} redirects."
+    )
+
+
 def reachability(url, host):
+    try:
+        validate_public_target(url)
+    except UnsafeScanTarget as exc:
+        return {
+            "dns": "Restricted",
+            "http": "Not checked",
+            "reachable": False,
+            "detail": str(exc)
+        }
     try:
         socket.getaddrinfo(host, None)
     except (socket.gaierror, OSError):
@@ -177,9 +245,8 @@ def reachability(url, host):
         }
 
     try:
-        r = requests.get(
+        r = safe_get(
             url,
-            allow_redirects=True,
             timeout=8,
             stream=True,
             headers={"User-Agent": "Mozilla/5.0 SafeLink/1.0"}
@@ -193,6 +260,13 @@ def reachability(url, host):
             "reachable": True,
             "detail": f"Server responded with HTTP {code}.",
             "final_url": final_url
+        }
+    except UnsafeScanTarget as exc:
+        return {
+            "dns": "Resolved",
+            "http": "Restricted",
+            "reachable": False,
+            "detail": f"A redirect was blocked for safety: {exc}"
         }
     except requests.RequestException:
         return {
@@ -230,6 +304,18 @@ def render_javascript_page(url, headers):
                     user_agent=headers["User-Agent"],
                     locale="en-IN"
                 )
+
+                def allow_public_request(route):
+                    try:
+                        validate_public_target(route.request.url)
+                    except UnsafeScanTarget:
+                        route.abort()
+                    else:
+                        route.continue_()
+
+                # A rendered page can initiate its own requests, so apply the
+                # same public-network rule to browser resources as HTTP fetches.
+                browser_page.route("**/*", allow_public_request)
                 response = browser_page.goto(
                     url, wait_until="domcontentloaded", timeout=15000
                 )
@@ -392,10 +478,9 @@ def page_analysis(url):
     result["categories"] = domain_categories
 
     try:
-        r = requests.get(
+        r = safe_get(
             url,
             headers=headers,
-            allow_redirects=True,
             timeout=10,
             stream=True
         )
@@ -419,7 +504,7 @@ def page_analysis(url):
         if code == 404 and p.path not in ("", "/"):
             try:
                 origin = f"{p.scheme}://{p.netloc}/"
-                rr = requests.get(origin, headers=headers, allow_redirects=True, timeout=10)
+                rr = safe_get(origin, headers=headers, timeout=10)
                 root_code = rr.status_code
                 root_page = rr.text[:700000]
                 root_url = rr.url
@@ -512,6 +597,14 @@ def page_analysis(url):
 
         return result
 
+    except UnsafeScanTarget:
+        result["content_source"] = "Blocked for safety"
+        result["detail"] = (
+            "A redirect or resource destination pointed to a local/private network, "
+            "so webpage analysis was stopped for safety."
+        )
+        result["blocked"] = True
+        return result
     except requests.RequestException:
         # A true network/request failure, rather than a normal 403/404 response.
         result["content_source"] = "URL/domain fallback"
@@ -588,6 +681,8 @@ def content_analysis_label(page):
         return f"Page access restricted (HTTP {status})" if status else "Page access restricted"
     if source in ("Server unavailable", "5xx"):
         return f"Server unavailable (HTTP {status})" if status else "Server unavailable"
+    if source == "Blocked for safety":
+        return "Page destination blocked for safety"
     if status == 404:
         return "Page not found (HTTP 404)"
     if source == "URL/domain fallback":
@@ -705,7 +800,13 @@ def friendly_statuses(result):
             http
         )
 
-    if page.get("content_source") == "Access restricted" or ps == 403:
+    if page.get("content_source") == "Blocked for safety":
+        page_ui = (
+            "Blocked for safety", "warn",
+            "The scan stopped because a redirect or page resource targeted a private network.",
+            page.get("status_code", "")
+        )
+    elif page.get("content_source") == "Access restricted" or ps == 403:
         page_ui = (
             "Access restricted", "warn",
             "The webpage blocked automated access, so content analysis was limited.",
@@ -755,6 +856,7 @@ def analyze_url(url):
     invalid = {
         "status": "Invalid URL",
         "invalid_url": True,
+        "invalid_title": "⚠️ Invalid URL",
         "invalid_message": "Please enter a valid website address, such as https://example.com.",
         "score": 0,
         "confidence": 0,
@@ -778,20 +880,31 @@ def analyze_url(url):
     except Exception:
         return invalid
 
-    if (
-        not host
-        or any(ch.isspace() for ch in original)
-        or (
-            "." not in host
-            and not re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", host)
-        )
-    ):
-        return invalid
-
     try:
         is_ip = bool(ipaddress.ip_address(host))
     except ValueError:
         is_ip = False
+
+    if (
+        p.scheme not in {"http", "https"}
+        or not host
+        or any(ch.isspace() for ch in original)
+        or ("." not in host and not is_ip and host != "localhost")
+    ):
+        return invalid
+
+    try:
+        validate_public_target(normalized)
+    except UnsafeScanTarget:
+        restricted = dict(invalid)
+        restricted.update({
+            "invalid_title": "⚠️ Restricted address",
+            "invalid_message": (
+                "For safety, SafeLink can scan only public websites—not local, "
+                "private, or reserved network addresses."
+            )
+        })
+        return restricted
 
     parts = host.split(".")
     tld = parts[-1] if len(parts) > 1 else ""

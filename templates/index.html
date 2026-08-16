@@ -83,7 +83,7 @@
 
   {% if result and result.invalid_url %}
   <div class="inline-error" role="alert">
-    <strong>⚠️ Invalid URL</strong>
+    <strong>{{ result.invalid_title or "⚠️ Invalid URL" }}</strong>
     <span>{{ result.invalid_message }}</span>
     <button type="button" onclick="document.querySelector('input[name=url]').focus()">Retry Scan</button>
   </div>
