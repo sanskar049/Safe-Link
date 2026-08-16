@@ -72,6 +72,11 @@ PIRACY_DOMAIN_TERMS = [
     "torrent", "magnet", "pirated", "piracy", "free-streaming"
 ]
 
+# A page must contain a useful amount of visible text before we claim that its
+# content was analyzed. This prevents JavaScript-only shells from being shown as
+# successfully analyzed when the actual webpage text was never available.
+MIN_ANALYZABLE_TEXT = 80
+
 
 def conn():
     c = sqlite3.connect(DB, timeout=10)
@@ -206,6 +211,43 @@ def extract_visible_text(page):
     return re.sub(r"\s+", " ", htmlmod.unescape(text)).strip()
 
 
+def render_javascript_page(url, headers):
+    """Return rendered HTML for a JavaScript-heavy public page, when available.
+
+    Requests is deliberately kept as the fast first pass. Playwright is only a
+    fallback for pages whose initial HTML does not contain readable text.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(
+                headless=True,
+                args=["--disable-dev-shm-usage", "--no-sandbox"]
+            )
+            try:
+                browser_page = browser.new_page(
+                    user_agent=headers["User-Agent"],
+                    locale="en-IN"
+                )
+                response = browser_page.goto(
+                    url, wait_until="domcontentloaded", timeout=15000
+                )
+                # Give client-rendered content a short, bounded opportunity to load.
+                browser_page.wait_for_timeout(900)
+                return {
+                    "html": browser_page.content(),
+                    "title": browser_page.title(),
+                    "url": browser_page.url,
+                    "status_code": response.status if response else None
+                }
+            finally:
+                browser.close()
+    except Exception:
+        # Playwright/browser availability must never make an ordinary scan fail.
+        return None
+
+
 def analyze_page_content(page, title, host):
     visible = extract_visible_text(page)
     metadata = f"{visible} {title} {host}".lower()
@@ -228,6 +270,8 @@ def analyze_page_content(page, title, host):
         "phishing_signals": 0,
         "status_code": "200",
         "content_source": "HTTP",
+        "analysis_method": "HTTP HTML",
+        "content_length": len(visible),
         "detail": "Public webpage content was analyzed."
     }
 
@@ -324,7 +368,9 @@ def page_analysis(url):
         "status_code": "Not checked",
         "detail": "Page content was not checked.",
         "blocked": False,
-        "content_source": "Not checked"
+        "content_source": "Not checked",
+        "analysis_method": "Not checked",
+        "content_length": 0
     }
 
     p = urlparse(url)
@@ -367,6 +413,7 @@ def page_analysis(url):
         title = re.sub(
             r"\s+", " ", htmlmod.unescape(title_match.group(1))
         ).strip()[:200] if title_match else ""
+        analysis_method = "HTTP HTML"
 
         # A deep-link 404 can still have a working site root.
         if code == 404 and p.path not in ("", "/"):
@@ -385,6 +432,7 @@ def page_analysis(url):
                     analyzed["categories"] = list(dict.fromkeys(domain_categories + analyzed.get("categories", [])))
                     analyzed["status_code"] = str(root_code)
                     analyzed["content_source"] = "HTTP"
+                    analyzed["analysis_method"] = "HTTP HTML"
                     analyzed["detail"] = (
                         f"The requested path returned HTTP 404, but the site homepage "
                         f"responded with HTTP {root_code} and was analyzed."
@@ -394,12 +442,37 @@ def page_analysis(url):
             except requests.RequestException:
                 pass
 
-        # Analyze actual readable HTML when we have it.
-        if ("html" in content_type or "text/" in content_type) and len(page.strip()) >= 80:
+        # A JavaScript app may return a valid HTML shell but no readable content.
+        # Render it in Chromium only in that case, keeping normal scans fast.
+        visible_length = len(extract_visible_text(page))
+        if (
+            200 <= code < 400
+            and ("html" in content_type or "text/" in content_type)
+            and visible_length < MIN_ANALYZABLE_TEXT
+        ):
+            rendered = render_javascript_page(final_url, headers)
+            if rendered:
+                rendered_html = rendered.get("html", "")
+                rendered_length = len(extract_visible_text(rendered_html))
+                if rendered_length >= MIN_ANALYZABLE_TEXT:
+                    page = rendered_html
+                    title = (rendered.get("title") or title)[:200]
+                    final_url = rendered.get("url") or final_url
+                    final_host = (urlparse(final_url).hostname or final_host).lower()
+                    code = rendered.get("status_code") or code
+                    visible_length = rendered_length
+                    analysis_method = "Browser rendered"
+
+        # Analyze only actual readable HTML, not an empty app shell or script bundle.
+        if (
+            ("html" in content_type or "text/" in content_type)
+            and visible_length >= MIN_ANALYZABLE_TEXT
+        ):
             analyzed, _ = analyze_page_content(page, title, final_host)
             analyzed["categories"] = list(dict.fromkeys(domain_categories + analyzed.get("categories", [])))
             analyzed["status_code"] = str(code)
             analyzed["reachable"] = True
+            analyzed["analysis_method"] = analysis_method
             if code in (401, 403, 429):
                 analyzed["blocked"] = True
                 analyzed["content_source"] = "Access restricted"
@@ -490,12 +563,26 @@ def google_safe_browsing_check(url):
     return result
 
 
+def page_content_was_analyzed(page):
+    page = page or {}
+    status = safe_int(page.get("status_code"))
+    return (
+        page.get("content_source") == "HTTP"
+        and status is not None
+        and 200 <= status < 300
+        and safe_int(page.get("content_length")) is not None
+        and safe_int(page.get("content_length")) >= MIN_ANALYZABLE_TEXT
+    )
+
+
 def content_analysis_label(page):
     page = page or {}
     source = page.get("content_source", "")
     status = safe_int(page.get("status_code"))
 
-    if source == "HTTP" and status is not None and 200 <= status < 300:
+    if page_content_was_analyzed(page):
+        if page.get("analysis_method") == "Browser rendered":
+            return "Page content analyzed (browser-rendered)"
         return "Page content analyzed"
     if source in ("Access restricted", "403"):
         return f"Page access restricted (HTTP {status})" if status else "Page access restricted"
@@ -518,11 +605,13 @@ def calculate_confidence(reach, page, gsb, evidence_count):
         points += 20
     if reach.get("http") not in ("Not checked", "No response"):
         points += 20
-    if page.get("content_source") == "HTTP" and safe_int(page.get("status_code")) and safe_int(page.get("status_code")) < 300:
+    if page_content_was_analyzed(page):
         points += 30
     elif page.get("content_source") == "Access restricted":
         points += 10
-    if page.get("categories") or page.get("signals") or page.get("brand_impersonation"):
+    if page_content_was_analyzed(page) and (
+        page.get("signals") or page.get("brand_impersonation")
+    ):
         points += 10
     if gsb.get("enabled"):
         points += 20
@@ -628,10 +717,16 @@ def friendly_statuses(result):
             "The requested webpage path returned HTTP 404.",
             page.get("status_code", "")
         )
+    elif page_content_was_analyzed(page):
+        page_ui = (
+            "Analyzed", "pass",
+            "Readable webpage content was successfully analyzed.",
+            page.get("status_code", "")
+        )
     elif ps is not None and 200 <= ps < 300:
         page_ui = (
-            "Loaded", "pass",
-            "The webpage was successfully accessed for analysis.",
+            "Content limited", "warn",
+            "The webpage responded, but it did not expose enough readable content to analyze.",
             page.get("status_code", "")
         )
     elif ps is not None and ps >= 500:
@@ -729,6 +824,7 @@ def analyze_url(url):
             "payment_signals": 0, "policy_signals": 0, "discount_signals": 0,
             "phishing_signals": 0, "status_code": "Not checked",
             "content_source": "Not checked",
+            "analysis_method": "Not checked", "content_length": 0,
             "detail": "Page analysis was skipped because the domain did not resolve."
         }
 
@@ -912,6 +1008,7 @@ def analyze_url(url):
         "payment_signals": 0, "policy_signals": 0, "discount_signals": 0,
         "phishing_signals": 0, "status_code": "Not checked",
         "content_source": "Not checked",
+        "analysis_method": "Not checked", "content_length": 0,
         "detail": "Page analysis skipped because the domain did not resolve."
     }
 
@@ -938,20 +1035,11 @@ def analyze_url(url):
             page["detail"] = "The server responded, but readable webpage content was limited."
 
     categories = page.get("categories", [])
-    if categories:
+    if page_content_was_analyzed(page):
         evidence += 1
 
-    # Content/category risk is separate from malware/phishing risk, but it should not
-    # disappear into a 0/100 "Low Risk" result. These modest weights make the result
-    # informative without claiming that a category is inherently malicious.
-    if "Potentially unauthorized streaming / piracy" in categories:
-        add(15, "Website category shows multiple signals associated with potentially unauthorized streaming/piracy")
-    elif "Gambling / betting" in categories:
-        add(10, "Website category shows gambling/betting content")
-    elif "Fantasy sports / paid contests" in categories:
-        add(6, "Website category shows fantasy sports or paid-contest content")
-    elif "E-commerce" in categories:
-        add(4, "Website category shows e-commerce activity")
+    # Website type is shown to the user, but never treated as proof that a
+    # website is malicious. Only security evidence below contributes to risk.
 
     page_brands = page.get("brand_impersonation", [])
     if page_brands:
@@ -964,12 +1052,13 @@ def analyze_url(url):
     forms = page.get("forms", 0)
     payment_signals = page.get("payment_signals", 0)
 
-    if password_fields and phishing >= 2:
-        add(10, "Password/login form appears together with security-related language")
-    if page_brands and (password_fields or phishing >= 2):
-        add(14, "Brand impersonation is combined with a login/security context")
-    if payment_signals >= 3 and (password_fields or phishing >= 3):
-        add(8, "Payment activity is combined with account/security signals")
+    domain_anomaly = bool(domain_brand or typo or page_brands)
+    if password_fields and phishing >= 2 and domain_anomaly:
+        add(16, "Password/login form is combined with a suspicious brand or domain signal")
+    if page_brands and (password_fields or phishing >= 3):
+        add(18, "Possible brand impersonation is combined with a login/security context")
+    if payment_signals >= 3 and (password_fields or phishing >= 3) and domain_anomaly:
+        add(10, "Payment activity is combined with a suspicious account/security context")
 
     # Scam language is meaningful only when several indicators occur together.
     raw_page = page.get("_raw_html", "")
@@ -980,8 +1069,8 @@ def analyze_url(url):
         r"account suspended|verify immediately)\b",
         visible_page, re.I
     ))
-    if scam_terms >= 2 and (payment_signals or phishing >= 2):
-        add(10, "Multiple scam/urgent-action signals detected in page content")
+    if scam_terms >= 2 and (payment_signals or phishing >= 2) and domain_anomaly:
+        add(12, "Multiple scam/urgent-action signals are combined with a suspicious domain or brand signal")
 
     # Availability problems do not automatically increase cyber risk.
     http_code = safe_int(reach.get("http"))

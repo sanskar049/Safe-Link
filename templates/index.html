@@ -145,36 +145,22 @@
     </div>
   </div>
 
-  <div class="stats">
-    <div><small>DOMAIN STATUS</small><b>{{ result.domain_status }}</b></div>
-    <div><small>SERVER RESPONSE</small><b>{{ result.http_status }}</b></div>
-    <div><small>HOST</small><b>{{ result.host }}</b></div>
-  </div>
-
   <div class="content-summary">
     <div>
-      <small>WEBPAGE</small>
-      <b>{{ result.page.status_code }}</b>
+      <small>PAGE TITLE</small>
+      <b>{{ result.page.title if result.page.title else "Not available" }}</b>
     </div>
     <div>
-      <small>BRAND FLAGS</small>
-      <b>{{ result.page.brand_impersonation|join(", ") if result.page.brand_impersonation else "None" }}</b>
-    </div>
-    <div>
-      <small>CONTENT ACCESS</small>
+      <small>CONTENT ANALYSIS</small>
       <b>{{ result.content_analysis_label }}</b>
     </div>
     <div>
-      <small>ANALYSIS SCOPE</small>
-      <b>
-        {% if result.page.content_source == "HTTP" %}
-          URL + page content
-        {% elif result.page.content_source == "Access restricted" %}
-          URL + limited server evidence
-        {% else %}
-          URL + domain evidence
-        {% endif %}
-      </b>
+      <small>CONTENT SIGNALS</small>
+      <b>{{ result.page.signals|join(", ") if result.page.signals else "No high-risk content signals" }}</b>
+    </div>
+    <div>
+      <small>ANALYSIS METHOD</small>
+      <b>{{ result.page.analysis_method }}</b>
     </div>
   </div>
 
