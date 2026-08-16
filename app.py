@@ -1057,11 +1057,27 @@ def analyze_url(url):
     # Internal-only field; do not send raw HTML to the browser/API.
     page.pop("_raw_html", None)
 
+    if domain_unresolved:
+        reasons.insert(0, "The domain could not be resolved, so website security could not be verified.")
+
+    # An unresolved domain is not the same as a safe domain.
+    # Do not present 0/100 as "Low Risk" when there is no website to assess.
+    domain_unresolved = (reach.get("dns") == "Not resolved")
+
+    if domain_unresolved:
+        display_status = "Domain Does Not Exist"
+        display_score = "N/A"
+        risk_status_value = "Not enough evidence"
+    else:
+        display_status = status
+        display_score = score
+        risk_status_value = status
+
     result = {
-        "status": status,
-        "risk_status": status,
+        "status": display_status,
+        "risk_status": risk_status_value,
         "invalid_url": False,
-        "score": score,
+        "score": display_score,
         "confidence": confidence,
         "reasons": reasons[:8],
         "checks": checks,
@@ -1094,7 +1110,7 @@ def save(result):
             (
                 result.get("url", ""),
                 result.get("status", ""),
-                result.get("score", 0),
+                safe_int(result.get("score", 0)) or 0,
                 result.get("confidence", 0),
                 result.get("domain_status", ""),
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S")
