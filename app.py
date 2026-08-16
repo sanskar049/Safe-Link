@@ -8,7 +8,7 @@ import socket
 import html as htmlmod
 import os
 from datetime import datetime
-from urllib.parse import urlparse, unquote, urljoin
+from urllib.parse import urlparse, unquote
 from difflib import SequenceMatcher
 
 from flask import Flask, render_template, request, jsonify, Response
@@ -71,16 +71,6 @@ PIRACY_DOMAIN_TERMS = [
     "download-movie", "camrip", "webrip", "bluray", "dual-audio",
     "torrent", "magnet", "pirated", "piracy", "free-streaming"
 ]
-
-# A page must contain a useful amount of visible text before we claim that its
-# content was analyzed. This prevents JavaScript-only shells from being shown as
-# successfully analyzed when the actual webpage text was never available.
-MIN_ANALYZABLE_TEXT = 80
-MAX_REDIRECTS = 5
-
-
-class UnsafeScanTarget(Exception):
-    """Raised when a scan would reach a local or private network address."""
 
 
 def conn():
@@ -170,70 +160,7 @@ def detect_typosquatting(host):
     return list(dict.fromkeys(found))
 
 
-def validate_public_target(url):
-    """Reject local/private targets before the scanner makes an HTTP request."""
-    parsed = urlparse(url)
-    host = (parsed.hostname or "").lower().rstrip(".")
-    if parsed.scheme not in {"http", "https"} or not host:
-        raise UnsafeScanTarget("Only public HTTP(S) URLs can be scanned.")
-    if host == "localhost" or host.endswith(".localhost") or host.endswith(".local"):
-        raise UnsafeScanTarget("Local network addresses cannot be scanned.")
-
-    try:
-        if not ipaddress.ip_address(host).is_global:
-            raise UnsafeScanTarget("Private or reserved IP addresses cannot be scanned.")
-        return
-    except ValueError:
-        pass
-
-    try:
-        addresses = {
-            item[4][0] for item in socket.getaddrinfo(host, None)
-        }
-    except (socket.gaierror, OSError):
-        # Keep DNS failures as normal scan results rather than validation errors.
-        return
-
-    if any(not ipaddress.ip_address(address).is_global for address in addresses):
-        raise UnsafeScanTarget("The hostname resolves to a private or reserved address.")
-
-
-def safe_get(url, *, headers, timeout, stream=False):
-    """Fetch a public page while validating every redirect destination."""
-    current_url = url
-    for _ in range(MAX_REDIRECTS + 1):
-        validate_public_target(current_url)
-        response = requests.get(
-            current_url,
-            headers=headers,
-            allow_redirects=False,
-            timeout=timeout,
-            stream=stream
-        )
-        if not response.is_redirect:
-            return response
-
-        location = response.headers.get("Location")
-        if not location:
-            return response
-        response.close()
-        current_url = urljoin(current_url, location)
-
-    raise requests.TooManyRedirects(
-        f"SafeLink stopped after {MAX_REDIRECTS} redirects."
-    )
-
-
 def reachability(url, host):
-    try:
-        validate_public_target(url)
-    except UnsafeScanTarget as exc:
-        return {
-            "dns": "Restricted",
-            "http": "Not checked",
-            "reachable": False,
-            "detail": str(exc)
-        }
     try:
         socket.getaddrinfo(host, None)
     except (socket.gaierror, OSError):
@@ -245,8 +172,9 @@ def reachability(url, host):
         }
 
     try:
-        r = safe_get(
+        r = requests.get(
             url,
+            allow_redirects=True,
             timeout=8,
             stream=True,
             headers={"User-Agent": "Mozilla/5.0 SafeLink/1.0"}
@@ -260,13 +188,6 @@ def reachability(url, host):
             "reachable": True,
             "detail": f"Server responded with HTTP {code}.",
             "final_url": final_url
-        }
-    except UnsafeScanTarget as exc:
-        return {
-            "dns": "Resolved",
-            "http": "Restricted",
-            "reachable": False,
-            "detail": f"A redirect was blocked for safety: {exc}"
         }
     except requests.RequestException:
         return {
@@ -283,55 +204,6 @@ def extract_visible_text(page):
     text = re.sub(r"<noscript[^>]*>.*?</noscript>", " ", text, flags=re.I | re.S)
     text = re.sub(r"<[^>]+>", " ", text)
     return re.sub(r"\s+", " ", htmlmod.unescape(text)).strip()
-
-
-def render_javascript_page(url, headers):
-    """Return rendered HTML for a JavaScript-heavy public page, when available.
-
-    Requests is deliberately kept as the fast first pass. Playwright is only a
-    fallback for pages whose initial HTML does not contain readable text.
-    """
-    try:
-        from playwright.sync_api import sync_playwright
-
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(
-                headless=True,
-                args=["--disable-dev-shm-usage", "--no-sandbox"]
-            )
-            try:
-                browser_page = browser.new_page(
-                    user_agent=headers["User-Agent"],
-                    locale="en-IN"
-                )
-
-                def allow_public_request(route):
-                    try:
-                        validate_public_target(route.request.url)
-                    except UnsafeScanTarget:
-                        route.abort()
-                    else:
-                        route.continue_()
-
-                # A rendered page can initiate its own requests, so apply the
-                # same public-network rule to browser resources as HTTP fetches.
-                browser_page.route("**/*", allow_public_request)
-                response = browser_page.goto(
-                    url, wait_until="domcontentloaded", timeout=15000
-                )
-                # Give client-rendered content a short, bounded opportunity to load.
-                browser_page.wait_for_timeout(900)
-                return {
-                    "html": browser_page.content(),
-                    "title": browser_page.title(),
-                    "url": browser_page.url,
-                    "status_code": response.status if response else None
-                }
-            finally:
-                browser.close()
-    except Exception:
-        # Playwright/browser availability must never make an ordinary scan fail.
-        return None
 
 
 def analyze_page_content(page, title, host):
@@ -356,8 +228,6 @@ def analyze_page_content(page, title, host):
         "phishing_signals": 0,
         "status_code": "200",
         "content_source": "HTTP",
-        "analysis_method": "HTTP HTML",
-        "content_length": len(visible),
         "detail": "Public webpage content was analyzed."
     }
 
@@ -454,9 +324,7 @@ def page_analysis(url):
         "status_code": "Not checked",
         "detail": "Page content was not checked.",
         "blocked": False,
-        "content_source": "Not checked",
-        "analysis_method": "Not checked",
-        "content_length": 0
+        "content_source": "Not checked"
     }
 
     p = urlparse(url)
@@ -478,9 +346,10 @@ def page_analysis(url):
     result["categories"] = domain_categories
 
     try:
-        r = safe_get(
+        r = requests.get(
             url,
             headers=headers,
+            allow_redirects=True,
             timeout=10,
             stream=True
         )
@@ -498,13 +367,12 @@ def page_analysis(url):
         title = re.sub(
             r"\s+", " ", htmlmod.unescape(title_match.group(1))
         ).strip()[:200] if title_match else ""
-        analysis_method = "HTTP HTML"
 
         # A deep-link 404 can still have a working site root.
         if code == 404 and p.path not in ("", "/"):
             try:
                 origin = f"{p.scheme}://{p.netloc}/"
-                rr = safe_get(origin, headers=headers, timeout=10)
+                rr = requests.get(origin, headers=headers, allow_redirects=True, timeout=10)
                 root_code = rr.status_code
                 root_page = rr.text[:700000]
                 root_url = rr.url
@@ -517,7 +385,6 @@ def page_analysis(url):
                     analyzed["categories"] = list(dict.fromkeys(domain_categories + analyzed.get("categories", [])))
                     analyzed["status_code"] = str(root_code)
                     analyzed["content_source"] = "HTTP"
-                    analyzed["analysis_method"] = "HTTP HTML"
                     analyzed["detail"] = (
                         f"The requested path returned HTTP 404, but the site homepage "
                         f"responded with HTTP {root_code} and was analyzed."
@@ -527,37 +394,12 @@ def page_analysis(url):
             except requests.RequestException:
                 pass
 
-        # A JavaScript app may return a valid HTML shell but no readable content.
-        # Render it in Chromium only in that case, keeping normal scans fast.
-        visible_length = len(extract_visible_text(page))
-        if (
-            200 <= code < 400
-            and ("html" in content_type or "text/" in content_type)
-            and visible_length < MIN_ANALYZABLE_TEXT
-        ):
-            rendered = render_javascript_page(final_url, headers)
-            if rendered:
-                rendered_html = rendered.get("html", "")
-                rendered_length = len(extract_visible_text(rendered_html))
-                if rendered_length >= MIN_ANALYZABLE_TEXT:
-                    page = rendered_html
-                    title = (rendered.get("title") or title)[:200]
-                    final_url = rendered.get("url") or final_url
-                    final_host = (urlparse(final_url).hostname or final_host).lower()
-                    code = rendered.get("status_code") or code
-                    visible_length = rendered_length
-                    analysis_method = "Browser rendered"
-
-        # Analyze only actual readable HTML, not an empty app shell or script bundle.
-        if (
-            ("html" in content_type or "text/" in content_type)
-            and visible_length >= MIN_ANALYZABLE_TEXT
-        ):
+        # Analyze actual readable HTML when we have it.
+        if ("html" in content_type or "text/" in content_type) and len(page.strip()) >= 80:
             analyzed, _ = analyze_page_content(page, title, final_host)
             analyzed["categories"] = list(dict.fromkeys(domain_categories + analyzed.get("categories", [])))
             analyzed["status_code"] = str(code)
             analyzed["reachable"] = True
-            analyzed["analysis_method"] = analysis_method
             if code in (401, 403, 429):
                 analyzed["blocked"] = True
                 analyzed["content_source"] = "Access restricted"
@@ -597,14 +439,6 @@ def page_analysis(url):
 
         return result
 
-    except UnsafeScanTarget:
-        result["content_source"] = "Blocked for safety"
-        result["detail"] = (
-            "A redirect or resource destination pointed to a local/private network, "
-            "so webpage analysis was stopped for safety."
-        )
-        result["blocked"] = True
-        return result
     except requests.RequestException:
         # A true network/request failure, rather than a normal 403/404 response.
         result["content_source"] = "URL/domain fallback"
@@ -656,33 +490,17 @@ def google_safe_browsing_check(url):
     return result
 
 
-def page_content_was_analyzed(page):
-    page = page or {}
-    status = safe_int(page.get("status_code"))
-    return (
-        page.get("content_source") == "HTTP"
-        and status is not None
-        and 200 <= status < 300
-        and safe_int(page.get("content_length")) is not None
-        and safe_int(page.get("content_length")) >= MIN_ANALYZABLE_TEXT
-    )
-
-
 def content_analysis_label(page):
     page = page or {}
     source = page.get("content_source", "")
     status = safe_int(page.get("status_code"))
 
-    if page_content_was_analyzed(page):
-        if page.get("analysis_method") == "Browser rendered":
-            return "Page content analyzed (browser-rendered)"
+    if source == "HTTP" and status is not None and 200 <= status < 300:
         return "Page content analyzed"
     if source in ("Access restricted", "403"):
         return f"Page access restricted (HTTP {status})" if status else "Page access restricted"
     if source in ("Server unavailable", "5xx"):
         return f"Server unavailable (HTTP {status})" if status else "Server unavailable"
-    if source == "Blocked for safety":
-        return "Page destination blocked for safety"
     if status == 404:
         return "Page not found (HTTP 404)"
     if source == "URL/domain fallback":
@@ -700,13 +518,11 @@ def calculate_confidence(reach, page, gsb, evidence_count):
         points += 20
     if reach.get("http") not in ("Not checked", "No response"):
         points += 20
-    if page_content_was_analyzed(page):
+    if page.get("content_source") == "HTTP" and safe_int(page.get("status_code")) and safe_int(page.get("status_code")) < 300:
         points += 30
     elif page.get("content_source") == "Access restricted":
         points += 10
-    if page_content_was_analyzed(page) and (
-        page.get("signals") or page.get("brand_impersonation")
-    ):
+    if page.get("categories") or page.get("signals") or page.get("brand_impersonation"):
         points += 10
     if gsb.get("enabled"):
         points += 20
@@ -800,13 +616,7 @@ def friendly_statuses(result):
             http
         )
 
-    if page.get("content_source") == "Blocked for safety":
-        page_ui = (
-            "Blocked for safety", "warn",
-            "The scan stopped because a redirect or page resource targeted a private network.",
-            page.get("status_code", "")
-        )
-    elif page.get("content_source") == "Access restricted" or ps == 403:
+    if page.get("content_source") == "Access restricted" or ps == 403:
         page_ui = (
             "Access restricted", "warn",
             "The webpage blocked automated access, so content analysis was limited.",
@@ -818,16 +628,10 @@ def friendly_statuses(result):
             "The requested webpage path returned HTTP 404.",
             page.get("status_code", "")
         )
-    elif page_content_was_analyzed(page):
-        page_ui = (
-            "Analyzed", "pass",
-            "Readable webpage content was successfully analyzed.",
-            page.get("status_code", "")
-        )
     elif ps is not None and 200 <= ps < 300:
         page_ui = (
-            "Content limited", "warn",
-            "The webpage responded, but it did not expose enough readable content to analyze.",
+            "Loaded", "pass",
+            "The webpage was successfully accessed for analysis.",
             page.get("status_code", "")
         )
     elif ps is not None and ps >= 500:
@@ -856,7 +660,6 @@ def analyze_url(url):
     invalid = {
         "status": "Invalid URL",
         "invalid_url": True,
-        "invalid_title": "⚠️ Invalid URL",
         "invalid_message": "Please enter a valid website address, such as https://example.com.",
         "score": 0,
         "confidence": 0,
@@ -880,31 +683,20 @@ def analyze_url(url):
     except Exception:
         return invalid
 
-    try:
-        is_ip = bool(ipaddress.ip_address(host))
-    except ValueError:
-        is_ip = False
-
     if (
-        p.scheme not in {"http", "https"}
-        or not host
+        not host
         or any(ch.isspace() for ch in original)
-        or ("." not in host and not is_ip and host != "localhost")
+        or (
+            "." not in host
+            and not re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", host)
+        )
     ):
         return invalid
 
     try:
-        validate_public_target(normalized)
-    except UnsafeScanTarget:
-        restricted = dict(invalid)
-        restricted.update({
-            "invalid_title": "⚠️ Restricted address",
-            "invalid_message": (
-                "For safety, SafeLink can scan only public websites—not local, "
-                "private, or reserved network addresses."
-            )
-        })
-        return restricted
+        is_ip = bool(ipaddress.ip_address(host))
+    except ValueError:
+        is_ip = False
 
     parts = host.split(".")
     tld = parts[-1] if len(parts) > 1 else ""
@@ -930,52 +722,114 @@ def analyze_url(url):
 
     if reach["dns"] == "Not resolved":
         checks.append(("Domain / DNS", "danger", "Not resolved"))
+
+        # DNS failure must not erase strong URL-level evidence. Evaluate the
+        # signals that can be checked without loading the website.
+        unresolved_score = 0
+        unresolved_reasons = []
+
+        if p.scheme != "https":
+            unresolved_score += 3
+            unresolved_reasons.append("The website uses HTTP instead of HTTPS")
+        if is_ip:
+            unresolved_score += 18
+            unresolved_reasons.append("A raw IP address is used instead of a normal domain")
+        if len(original) > 160:
+            unresolved_score += 7
+            unresolved_reasons.append("Very long URL")
+        elif len(original) > 100:
+            unresolved_score += 4
+            unresolved_reasons.append("Long URL")
+        if "@" in original:
+            unresolved_score += 15
+            unresolved_reasons.append("The @ symbol can hide the real destination")
+        if original.count("//") > 1:
+            unresolved_score += 6
+            unresolved_reasons.append("Extra // sequence suggests URL obfuscation")
+        if "%" in original:
+            unresolved_score += 2
+            unresolved_reasons.append("Percent-encoded characters are present")
+        if "xn--" in host:
+            unresolved_score += 12
+            unresolved_reasons.append("Punycode/look-alike hostname detected")
+
+        hyphens = host.count("-")
+        if hyphens >= 4:
+            unresolved_score += 5
+            unresolved_reasons.append("Several hyphens in the hostname")
+        elif hyphens >= 2:
+            unresolved_score += 2
+            unresolved_reasons.append("Multiple hyphens in the hostname")
+
+        if tld in SUSPICIOUS_TLDS:
+            unresolved_score += SUSPICIOUS_TLDS[tld]
+            unresolved_reasons.append(f"Potentially abused TLD: .{tld}")
+
+        keyword_points = sum(weight for word, weight in PHISHING_WORDS.items() if word in text)
+        if keyword_points:
+            unresolved_score += min(8, keyword_points)
+            unresolved_reasons.append("Phishing-related words found in the URL")
+
+        domain_brand = detect_domain_brand_risk(host)
+        typo = detect_typosquatting(host)
+        if typo:
+            unresolved_score += min(18, 9 * len(typo))
+            unresolved_reasons.append("Possible typosquatting: " + ", ".join(typo[:3]))
+        if domain_brand:
+            unresolved_score += min(24, 12 * len(domain_brand))
+            unresolved_reasons.append("Possible brand impersonation: " + ", ".join(domain_brand[:3]))
+
         gsb = google_safe_browsing_check(normalized)
+        gsb_threat = gsb.get("safe") is False
         page = {
             "reachable": False, "signals": [], "brand_impersonation": [],
             "categories": [], "forms": 0, "password_fields": 0,
             "payment_signals": 0, "policy_signals": 0, "discount_signals": 0,
             "phishing_signals": 0, "status_code": "Not checked",
             "content_source": "Not checked",
-            "analysis_method": "Not checked", "content_length": 0,
             "detail": "Page analysis was skipped because the domain did not resolve."
         }
-
-        # DNS failure is not itself a cyber-risk score. But a confirmed
-        # Google Safe Browsing threat must still produce a dangerous result.
-        threat_found = gsb.get("safe") is False
-        if threat_found:
-            checks.append(("Google Safe Browsing", "danger", "Threat detected"))
-            score = 90
-            status = "Dangerous"
-            confidence = 98
-            reasons = [
-                "The domain could not be resolved through DNS.",
-                "Google Safe Browsing reports a known threat for this URL.",
-                "The server and webpage could not be checked."
-            ]
-        else:
-            checks.append((
-                "Google Safe Browsing",
-                "pass" if gsb.get("enabled") else "warn",
+        checks.append((
+            "Google Safe Browsing",
+            "danger" if gsb_threat else ("pass" if gsb.get("enabled") else "warn"),
+            "Threat detected" if gsb_threat else (
                 "No known threat" if gsb.get("enabled") else "Not configured"
-            ))
-            score = None
-            status = "Domain Does Not Exist"
-            confidence = 98
-            reasons = [
-                "The domain could not be resolved through DNS.",
-                "The server and webpage could not be checked.",
-                "Risk score is not assessable because the domain could not be reached."
-            ]
+            )
+        ))
+
+        # An unresolved domain is not automatically malicious. But suspicious
+        # URL evidence must produce a visible non-zero score instead of 0.
+        if gsb_threat:
+            unresolved_score = max(85, unresolved_score + 55)
+            unresolved_reasons.insert(0, "Google Safe Browsing reports this URL as a known threat.")
+            dns_risk_label = "Known Threat"
+            result_status = "Known Threat — Domain Unresolved"
+            confidence = 82
+        elif unresolved_score > 0:
+            dns_risk_label = risk_level(unresolved_score)
+            result_status = "Domain Does Not Exist"
+            confidence = 35
+        else:
+            dns_risk_label = "Unable to Verify"
+            result_status = "Domain Does Not Exist"
+            confidence = 25
+
+        reasons = unresolved_reasons[:6]
+        reasons.extend([
+            "The domain could not be resolved through DNS.",
+            "The server and webpage could not be checked."
+        ])
+        if not unresolved_reasons:
+            reasons.append("A DNS failure does not prove that a website is malicious.")
 
         result = {
-            "status": status,
+            "status": result_status,
+            "risk_status": dns_risk_label,
             "invalid_url": False,
             "domain_not_resolved": True,
-            "score": score,
+            "score": min(100, max(0, round(unresolved_score))),
             "confidence": confidence,
-            "reasons": reasons,
+            "reasons": reasons[:8],
             "checks": checks,
             "host": host,
             "scheme": p.scheme,
@@ -1121,38 +975,24 @@ def analyze_url(url):
         "payment_signals": 0, "policy_signals": 0, "discount_signals": 0,
         "phishing_signals": 0, "status_code": "Not checked",
         "content_source": "Not checked",
-        "analysis_method": "Not checked", "content_length": 0,
         "detail": "Page analysis skipped because the domain did not resolve."
     }
 
-    # If the initial reachability check already knows the HTTP status, do not
-    # downgrade a later page-analysis exception to generic "URL/domain fallback".
-    known_http = safe_int(reach.get("http"))
-    if page.get("content_source") == "URL/domain fallback" and known_http is not None:
-        page["status_code"] = str(known_http)
-        if known_http in (401, 403, 429):
-            page["content_source"] = "Access restricted"
-            page["blocked"] = True
-            page["detail"] = (
-                f"The server returned HTTP {known_http}; the webpage could not be "
-                "fully read by the scanner."
-            )
-        elif known_http == 404:
-            page["content_source"] = "HTTP"
-            page["detail"] = "The requested webpage returned HTTP 404."
-        elif known_http >= 500:
-            page["content_source"] = "Server unavailable"
-            page["detail"] = f"The website returned HTTP {known_http}."
-        else:
-            page["content_source"] = "HTTP"
-            page["detail"] = "The server responded, but readable webpage content was limited."
-
     categories = page.get("categories", [])
-    if page_content_was_analyzed(page):
+    if categories:
         evidence += 1
 
-    # Website type is shown to the user, but never treated as proof that a
-    # website is malicious. Only security evidence below contributes to risk.
+    # Content/category risk is separate from malware/phishing risk, but it should not
+    # disappear into a 0/100 "Low Risk" result. These modest weights make the result
+    # informative without claiming that a category is inherently malicious.
+    if "Potentially unauthorized streaming / piracy" in categories:
+        add(15, "Website category shows multiple signals associated with potentially unauthorized streaming/piracy")
+    elif "Gambling / betting" in categories:
+        add(10, "Website category shows gambling/betting content")
+    elif "Fantasy sports / paid contests" in categories:
+        add(6, "Website category shows fantasy sports or paid-contest content")
+    elif "E-commerce" in categories:
+        add(4, "Website category shows e-commerce activity")
 
     page_brands = page.get("brand_impersonation", [])
     if page_brands:
@@ -1165,13 +1005,12 @@ def analyze_url(url):
     forms = page.get("forms", 0)
     payment_signals = page.get("payment_signals", 0)
 
-    domain_anomaly = bool(domain_brand or typo or page_brands)
-    if password_fields and phishing >= 2 and domain_anomaly:
-        add(16, "Password/login form is combined with a suspicious brand or domain signal")
-    if page_brands and (password_fields or phishing >= 3):
-        add(18, "Possible brand impersonation is combined with a login/security context")
-    if payment_signals >= 3 and (password_fields or phishing >= 3) and domain_anomaly:
-        add(10, "Payment activity is combined with a suspicious account/security context")
+    if password_fields and phishing >= 2:
+        add(10, "Password/login form appears together with security-related language")
+    if page_brands and (password_fields or phishing >= 2):
+        add(14, "Brand impersonation is combined with a login/security context")
+    if payment_signals >= 3 and (password_fields or phishing >= 3):
+        add(8, "Payment activity is combined with account/security signals")
 
     # Scam language is meaningful only when several indicators occur together.
     raw_page = page.get("_raw_html", "")
@@ -1182,8 +1021,8 @@ def analyze_url(url):
         r"account suspended|verify immediately)\b",
         visible_page, re.I
     ))
-    if scam_terms >= 2 and (payment_signals or phishing >= 2) and domain_anomaly:
-        add(12, "Multiple scam/urgent-action signals are combined with a suspicious domain or brand signal")
+    if scam_terms >= 2 and (payment_signals or phishing >= 2):
+        add(10, "Multiple scam/urgent-action signals detected in page content")
 
     # Availability problems do not automatically increase cyber risk.
     http_code = safe_int(reach.get("http"))
@@ -1220,6 +1059,7 @@ def analyze_url(url):
 
     result = {
         "status": status,
+        "risk_status": status,
         "invalid_url": False,
         "score": score,
         "confidence": confidence,
