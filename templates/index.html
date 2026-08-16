@@ -25,25 +25,36 @@
 .signal-dots{display:flex;flex-wrap:wrap;gap:14px}
 .dot.orange{background:#f59e0b}
 .inline-error{
-  margin-top:12px;
+  max-width:800px;
+  margin:12px auto 0;
   padding:12px 14px;
+  border:1px solid #f3c4c4;
   border-radius:12px;
-  display:flex;
+  background:#fff5f5;
+  color:#8d2525;
+  display:grid;
+  grid-template-columns:auto minmax(0,1fr) auto;
   align-items:center;
   gap:12px;
-  flex-wrap:wrap;
+  text-align:left;
 }
-.inline-error span{flex:1;min-width:220px}
+.inline-error strong{white-space:nowrap}
+.inline-error span{min-width:0;line-height:1.45}
 .inline-error button{
   border:0;
   border-radius:9px;
   padding:8px 12px;
+  background:#b42318;
+  color:#fff;
+  font-weight:700;
   cursor:pointer;
 }
 .gsb-card strong{font-weight:800}
 .why-result p strong{font-weight:800}
 @media (max-width:760px){
   .analysis-summary{grid-template-columns:1fr}
+  .inline-error{grid-template-columns:auto minmax(0,1fr)}
+  .inline-error button{grid-column:1/-1;width:100%;min-height:42px}
 }
 </style>
 
@@ -71,7 +82,7 @@
   </form>
 
   {% if result and result.invalid_url %}
-  <div class="inline-error">
+  <div class="inline-error" role="alert">
     <strong>⚠️ Invalid URL</strong>
     <span>{{ result.invalid_message }}</span>
     <button type="button" onclick="document.querySelector('input[name=url]').focus()">Retry Scan</button>
