@@ -1046,9 +1046,12 @@ def analyze_url(url):
     status = risk_level(score)
     confidence = calculate_confidence(reach, page, gsb, evidence)
 
-    if score == 0:
+    if score == 0 and reach.get("dns") != "Not resolved":
         reasons.insert(0, "No meaningful security-risk indicators were detected.")
-    elif not any("risk" in r.lower() or "threat" in r.lower() or "impersonation" in r.lower() for r in reasons):
+    elif reach.get("dns") != "Not resolved" and not any(
+        "risk" in r.lower() or "threat" in r.lower() or "impersonation" in r.lower()
+        for r in reasons
+    ):
         reasons.insert(0, "Risk score is based on URL, domain, page-access and reputation evidence.")
 
     if not reach.get("reachable") and reach.get("dns") == "Resolved":
@@ -1057,17 +1060,24 @@ def analyze_url(url):
     # Internal-only field; do not send raw HTML to the browser/API.
     page.pop("_raw_html", None)
 
-    if domain_unresolved:
-        reasons.insert(0, "The domain could not be resolved, so website security could not be verified.")
-
     # An unresolved domain is not the same as a safe domain.
     # Do not present 0/100 as "Low Risk" when there is no website to assess.
     domain_unresolved = (reach.get("dns") == "Not resolved")
 
     if domain_unresolved:
-        display_status = "Domain Does Not Exist"
-        display_score = "N/A"
-        risk_status_value = "Not enough evidence"
+        reasons.insert(0, "The domain could not be resolved, so website security could not be verified.")
+
+    if domain_unresolved:
+        if gsb.get("safe") is False:
+            display_status = "Known Threat — Domain Unresolved"
+            display_score = max(85, score)
+            risk_status_value = risk_level(display_score)
+            confidence = min(calculate_confidence(reach, page, gsb, evidence), 85)
+        else:
+            display_status = "Domain Does Not Exist"
+            display_score = "N/A"
+            risk_status_value = "Not enough evidence"
+            confidence = 0
     else:
         display_status = status
         display_score = score
