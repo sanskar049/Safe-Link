@@ -1109,6 +1109,20 @@ def analyze_url(url):
             "page": page
         })
     }
+
+    # Run the trained 3-class AI model for resolved domains and combine
+    # its AI risk with SafeLink's existing evidence-based score.
+    result = apply_ai_layer(
+        result,
+        normalized,
+        domain_resolved=(reach.get("dns") != "Not resolved")
+    )
+
+    # Keep the visible status synchronized with the final combined score.
+    if isinstance(result.get("score"), (int, float)):
+        result["status"] = risk_level(result["score"])
+        result["risk_status"] = result["status"]
+
     return result
 
 
@@ -1216,7 +1230,7 @@ if __name__ == "__main__":
 
 # --- SafeLink AI layer ---
 def apply_ai_layer(result, normalized_url, domain_resolved=True):
-    """Add AI prediction without changing invalid/unresolved-domain handling."""
+    """Add the trained 3-class AI prediction and combine it with SafeLink risk."""
     if not domain_resolved:
         result["ai"] = {
             "enabled": False,
@@ -1225,20 +1239,20 @@ def apply_ai_layer(result, normalized_url, domain_resolved=True):
             "ai_risk": None,
             "probabilities": {},
         }
-        # Preserve existing N/A score for unresolved domains.
         return result
 
     try:
         ai = predict_url(normalized_url)
         result["ai"] = ai
 
-        # Existing SafeLink numeric score is combined with AI risk.
+        # Final score = 55% existing SafeLink evidence + 45% AI risk.
         if isinstance(result.get("score"), (int, float)) and ai.get("ai_risk") is not None:
             existing_score = max(0, min(100, float(result["score"])))
             result["score"] = round(
                 0.55 * existing_score + 0.45 * float(ai["ai_risk"])
             )
-    except Exception:
+    except Exception as exc:
+        app.logger.warning("AI prediction unavailable: %s", exc)
         result["ai"] = {
             "enabled": False,
             "prediction": "AI unavailable",

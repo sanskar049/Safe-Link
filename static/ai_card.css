@@ -1,12 +1,60 @@
-
-.ai-result-card{margin:18px 0;padding:18px;border:1px solid rgba(20,40,80,.10);border-radius:16px;background:rgba(255,255,255,.78)}
-.ai-result-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
-.ai-result-head span{font-weight:800}.ai-result-head strong{font-size:18px}
-.ai-result-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
-.ai-result-grid>div{padding:12px;border-radius:12px;background:rgba(20,40,80,.04)}
-.ai-result-grid small{display:block;font-weight:700;opacity:.65;margin-bottom:5px}
+/* SafeLink AI result card */
+.ai-result-card{
+  margin:18px 0;
+  padding:20px;
+  border:1px solid rgba(20,40,80,.10);
+  border-radius:16px;
+  background:rgba(255,255,255,.82);
+  box-shadow:0 8px 24px rgba(20,40,80,.05);
+}
+.ai-result-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  margin-bottom:14px;
+}
+.ai-result-head span{font-weight:800}
+.ai-result-head strong{font-size:18px}
+.ai-result-grid{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:12px;
+}
+.ai-result-grid>div{
+  padding:13px;
+  border-radius:12px;
+  background:rgba(20,40,80,.04);
+}
+.ai-result-grid small{
+  display:block;
+  font-weight:700;
+  letter-spacing:.04em;
+  opacity:.65;
+  margin-bottom:5px;
+}
 .ai-result-grid b{font-size:18px}
-.ai-probabilities{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}
-.ai-probabilities span{padding:7px 10px;border-radius:9px;background:rgba(20,40,80,.05);font-size:13px}
-.ai-result-card p{margin:12px 0 0;line-height:1.5;opacity:.72}
-@media(max-width:760px){.ai-result-grid{grid-template-columns:1fr}.ai-result-head{align-items:flex-start;flex-direction:column}}
+.ai-probabilities{
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px;
+  margin-top:12px;
+}
+.ai-probabilities span{
+  padding:7px 10px;
+  border-radius:9px;
+  background:rgba(20,40,80,.05);
+  font-size:13px;
+}
+.ai-result-card p{
+  margin:12px 0 0;
+  line-height:1.5;
+  opacity:.72;
+}
+@media(max-width:760px){
+  .ai-result-grid{grid-template-columns:1fr}
+  .ai-result-head{
+    align-items:flex-start;
+    flex-direction:column;
+  }
+}

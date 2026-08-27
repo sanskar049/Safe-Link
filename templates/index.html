@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>SafeLink — URL Risk Analyzer</title>
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/ai_card.css">
 
 <style>
 .analysis-summary{
@@ -206,6 +207,8 @@
     </div>
   </div>
   {% endif %}
+
+  {% include "ai_result_card.html" %}
 
   <div class="grid">
     <article>
