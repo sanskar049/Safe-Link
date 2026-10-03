@@ -1,0 +1,20 @@
+SafeLink Render memory optimization
+
+1. Replace your current app.py with this app.py.
+2. Keep ai_model.py and the models/ folder exactly as in your project.
+3. Replace requirements.txt with this one. Playwright is intentionally removed because the current app.py uses requests for webpage fetching and does not import/use Playwright.
+4. In Render -> Settings -> Build Command use:
+   pip install -r requirements.txt
+5. In Render -> Settings -> Start Command use:
+   gunicorn --workers 1 --threads 1 --timeout 120 --access-logfile - --error-logfile - app:app
+6. Deploy a new version.
+
+Why:
+- One Gunicorn worker avoids loading the ML stack/model multiple times.
+- One thread keeps concurrency/memory predictable on a 512 MB instance.
+- Removing Playwright/Chromium removes an unused memory-heavy dependency.
+- The AI layer is defined before analyze_url() and before the production server starts.
+- Domain-unresolved URLs remain AI "Not assessable".
+
+Important:
+This reduces the application's memory footprint, but an 87 MB compressed model can use substantially more RAM after loading. If Render still reports an out-of-memory crash, the remaining bottleneck is likely the RandomForest model/runtime memory, and the next step is model-size reduction or a higher-memory instance.
