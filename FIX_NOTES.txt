@@ -1,0 +1,31 @@
+SafeLink – AI False Positive / Official Domain Fix
+
+What this fixes:
+1. Official Flipkart / Google / Indian Bank domains are recognized, including legitimate subdomains.
+2. Look-alike domains such as flipkart.com.evil.example are NOT trusted.
+3. Normal words such as login, password, bank, payment, and shopping language do not by themselves create phishing evidence on a verified official domain.
+4. The raw ML model output is preserved separately from the final security assessment.
+5. For a verified official domain with no independent threat/impersonation evidence, the final AI assessment is Legitimate even if the raw model is a false positive.
+6. The AI card now shows the final assessment first and puts raw model output under Technical model output.
+
+Expected examples:
+- https://www.flipkart.com/ -> Final AI Assessment: Legitimate; low final AI risk.
+- https://netbanking.indianbank.bank.in/jsp/startIB.jsp -> Final AI Assessment: Legitimate; low final AI risk.
+- https://flipkart-login.xyz/ -> NOT official; phishing evidence can remain high.
+- https://flipkart.com.evil.example/ -> NOT official; never treated as Flipkart.
+
+Files in this patch:
+- app.py
+- ai_model.py
+- ai_result_card.html
+- index.html
+
+Deployment:
+1. Replace the corresponding files in the GitHub/Render project.
+2. Commit and push to main.
+3. Wait for Render to finish the new deployment.
+4. Hard refresh the site (Ctrl+F5).
+5. Test Flipkart and Indian Bank again.
+
+Important:
+The trained model's raw prediction is not secretly changed. If the model says Phishing for a genuine official domain, the UI keeps that raw output separately and uses independent official-domain evidence for the final assessment. This avoids showing contradictory "Legitimate" and "Phishing 99%" values as if they were the same measurement.

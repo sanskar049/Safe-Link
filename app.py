@@ -22,7 +22,7 @@ DB = "safelink.db"
 BRANDS = [
     "google", "facebook", "instagram", "microsoft", "apple", "amazon",
     "paypal", "paytm", "phonepe", "flipkart", "netflix", "whatsapp",
-    "linkedin", "sbi", "hdfcbank", "icicibank", "axisbank", "indianbank"
+    "linkedin", "sbi", "hdfcbank", "icicibank", "axisbank"
 ]
 
 OFFICIAL_DOMAINS = {
@@ -111,22 +111,22 @@ def safe_int(value):
 
 
 def host_is_official(host, brand):
-    """Return True for the official domain or a genuine subdomain of it.
+    """Return True for the official domain and its legitimate subdomains.
 
-    A suffix match is only accepted on a dot boundary, so
-    ``google.com.evil.example`` is not treated as Google.
+    This intentionally uses an exact registrable-domain suffix check so a
+    look-alike such as ``flipkart.com.evil.example`` is never trusted.
     """
     host = (host or "").lower().rstrip(".")
-    for official in OFFICIAL_DOMAINS.get(brand, set()):
-        official = official.lower().rstrip(".")
-        if host == official or host.endswith("." + official):
+    for domain in OFFICIAL_DOMAINS.get(brand, set()):
+        domain = domain.lower().removeprefix("www.").rstrip(".")
+        if host == domain or host.endswith("." + domain):
             return True
     return False
 
 
 def official_brand_for_host(host):
-    """Return the recognized official brand for a hostname, if any."""
-    for brand in BRANDS:
+    """Return the verified official brand for a host, otherwise None."""
+    for brand in OFFICIAL_DOMAINS:
         if host_is_official(host, brand):
             return brand
     return None
@@ -247,8 +247,7 @@ def analyze_page_content(page, title, host):
         "phishing_signals": 0,
         "status_code": "200",
         "content_source": "HTTP",
-        "detail": "Public webpage content was analyzed.",
-        "analysis_method": "AI + Multi-Signal Analysis"
+        "detail": "Public webpage content was analyzed."
     }
 
     gambling = count(r"\b(casino|gambling|gamble|betting|sportsbook|sports[- ]?betting|"
@@ -344,8 +343,7 @@ def page_analysis(url):
         "status_code": "Not checked",
         "detail": "Page content was not checked.",
         "blocked": False,
-        "content_source": "Not checked",
-        "analysis_method": "URL + Domain Analysis"
+        "content_source": "Not checked"
     }
 
     p = urlparse(url)
@@ -679,105 +677,107 @@ def friendly_statuses(result):
 
 # --- SafeLink AI layer ---
 def apply_ai_layer(result, normalized_url, domain_resolved=True):
-    """Add raw model output and a transparent final assessment.
+    """Add AI output and a transparent final assessment.
 
-    The trained model output is never overwritten. For a verified official
-    domain, a separate evidence layer can reduce a model false positive, but
-    the original model prediction/probabilities remain visible for auditability.
+    The trained model's raw output is preserved.  For a verified official
+    domain, the final assessment is allowed to disagree with a known model
+    false-positive because domain identity is an independent security signal.
     """
     if not domain_resolved:
         result["ai"] = {
             "enabled": False,
             "prediction": "Not assessable",
-            "confidence": None,
-            "ai_risk": None,
-            "probabilities": {},
-            "raw_prediction": "Not assessable",
-            "raw_confidence": None,
-            "raw_ai_risk": None,
             "final_prediction": "Not assessable",
-            "final_ai_risk": None,
-            "adjustment": None,
-        }
-        return result
-
-    try:
-        ai = predict_url(normalized_url)
-        raw_prediction = ai.get("prediction")
-        raw_confidence = ai.get("confidence")
-        raw_ai_risk = ai.get("ai_risk")
-
-        # Keep the model values untouched. These are the actual model outputs.
-        ai["raw_prediction"] = raw_prediction
-        ai["raw_confidence"] = raw_confidence
-        ai["raw_ai_risk"] = raw_ai_risk
-        ai["final_prediction"] = raw_prediction
-        ai["final_ai_risk"] = raw_ai_risk
-        ai["adjustment"] = None
-
-        host = (urlparse(normalized_url).hostname or "").lower().rstrip(".")
-        official_brand = official_brand_for_host(host)
-        gsb_safe = result.get("google_safe_browsing", {}).get("safe")
-        page = result.get("page", {}) or {}
-        page_brands = page.get("brand_impersonation", []) or []
-        base_score = result.get("score")
-
-        # Official-domain trust is a separate evidence signal, not a replacement
-        # for the trained model. Only use it when there is no known external
-        # threat, no detected page impersonation, and the non-AI evidence is low.
-        safe_official_domain = (
-            official_brand is not None
-            and gsb_safe is not False
-            and not page_brands
-            and isinstance(base_score, (int, float))
-            and float(base_score) < 20
-        )
-
-        if safe_official_domain and raw_prediction in ("Phishing", "Suspicious"):
-            ai["final_prediction"] = "Legitimate"
-            ai["final_ai_risk"] = 5.0
-            ai["adjustment"] = (
-                f"Model output was moderated because {host} is a recognized "
-                f"official {official_brand} domain and no independent high-risk "
-                "evidence was found."
-            )
-
-        result["ai"] = ai
-
-        # Final score uses the final AI assessment, while the raw model output
-        # remains available separately.
-        if isinstance(result.get("score"), (int, float)) and ai.get("final_ai_risk") is not None:
-            existing_score = max(0, min(100, float(result["score"])))
-            result["score"] = round(
-                0.55 * existing_score + 0.45 * float(ai["final_ai_risk"])
-            )
-
-        if official_brand:
-            result["official_domain"] = {
-                "recognized": True,
-                "brand": official_brand,
-                "host": host,
-            }
-        else:
-            result["official_domain"] = {
-                "recognized": False,
-                "brand": None,
-                "host": host,
-            }
-    except Exception as exc:
-        app.logger.warning("AI prediction unavailable: %s", exc)
-        result["ai"] = {
-            "enabled": False,
-            "prediction": "AI unavailable",
             "confidence": None,
             "ai_risk": None,
             "probabilities": {},
             "raw_prediction": None,
             "raw_confidence": None,
             "raw_ai_risk": None,
+            "official_domain": False,
+            "official_brand": None,
+            "assessment_reason": "The domain could not be resolved."
+        }
+        return result
+
+    try:
+        raw = predict_url(normalized_url)
+        host = (result.get("host") or "").lower().rstrip(".")
+        official_brand = official_brand_for_host(host)
+        gsb = result.get("google_safe_browsing") or {}
+        page = result.get("page") or {}
+        has_impersonation = bool(result.get("reasons") and any(
+            "impersonation" in str(x).lower() or "typosquatting" in str(x).lower()
+            for x in result.get("reasons", [])
+        )) or bool(page.get("brand_impersonation"))
+
+        raw_prediction = raw.get("prediction")
+        raw_confidence = raw.get("confidence")
+        raw_ai_risk = raw.get("ai_risk")
+        final_prediction = raw_prediction
+        final_ai_risk = raw_ai_risk
+        assessment_reason = "AI model prediction combined with security evidence."
+
+        # A verified official domain is strong positive evidence, but never
+        # overrides an independently confirmed threat or impersonation signal.
+        if (official_brand and gsb.get("safe") is not False and not has_impersonation):
+            final_prediction = "Legitimate"
+            final_ai_risk = min(float(raw_ai_risk or 0), 8.0)
+            assessment_reason = (
+                f"Verified official {official_brand.title()} domain; raw AI output was {raw_prediction} "
+                "and was adjusted using domain evidence."
+            )
+        elif gsb.get("safe") is False:
+            final_prediction = "Phishing"
+            final_ai_risk = max(float(raw_ai_risk or 0), 90.0)
+            assessment_reason = "Known threat reported by Google Safe Browsing."
+        elif has_impersonation:
+            final_prediction = "Phishing" if float(raw_ai_risk or 0) >= 50 else "Suspicious"
+            final_ai_risk = max(float(raw_ai_risk or 0), 65.0)
+            assessment_reason = "Brand/domain impersonation or typosquatting evidence was detected."
+        else:
+            assessment_reason = "AI model prediction combined with URL, domain and webpage evidence."
+
+        result["ai"] = {
+            "enabled": True,
+            # These are the values shown as the final AI assessment.
+            "prediction": final_prediction,
+            "confidence": round(float(raw_confidence), 2) if raw_confidence is not None else None,
+            "ai_risk": round(final_ai_risk, 2) if final_ai_risk is not None else None,
+            "probabilities": raw.get("probabilities", {}),
+            # Raw model output is retained for transparency.
+            "raw_prediction": raw_prediction,
+            "raw_confidence": raw_confidence,
+            "raw_ai_risk": raw_ai_risk,
+            "official_domain": bool(official_brand),
+            "official_brand": official_brand,
+            "assessment_reason": assessment_reason
+        }
+
+        # Official domains should not be penalized by a known model false-positive.
+        # For other URLs, retain the existing evidence + AI weighting.
+        if isinstance(result.get("score"), (int, float)) and final_ai_risk is not None:
+            existing_score = max(0, min(100, float(result["score"])))
+            if official_brand and gsb.get("safe") is not False and not has_impersonation:
+                result["score"] = round(min(existing_score, 15.0))
+            else:
+                result["score"] = round(0.55 * existing_score + 0.45 * float(final_ai_risk))
+
+    except Exception as exc:
+        app.logger.warning("AI prediction unavailable: %s", exc)
+        result["ai"] = {
+            "enabled": False,
+            "prediction": "AI unavailable",
             "final_prediction": "AI unavailable",
-            "final_ai_risk": None,
-            "adjustment": None,
+            "confidence": None,
+            "ai_risk": None,
+            "probabilities": {},
+            "raw_prediction": None,
+            "raw_confidence": None,
+            "raw_ai_risk": None,
+            "official_domain": False,
+            "official_brand": None,
+            "assessment_reason": "The AI model could not be loaded."
         }
 
     return result
@@ -1039,12 +1039,17 @@ def analyze_url(url):
     checks.append(("TLD", "warn" if tld in SUSPICIOUS_TLDS else "pass", "." + tld if tld else "Unknown"))
 
     # Keyword points are deliberately capped. A keyword alone is weak evidence.
-    official_brand = official_brand_for_host(host)
     keyword_points = sum(weight for word, weight in PHISHING_WORDS.items() if word in text)
-    if keyword_points and not official_brand:
-        add(min(8, keyword_points), "Phishing-related words found in the URL")
-    elif keyword_points and official_brand:
-        reasons.append(f"Authentication-related words were found, but the hostname is a recognized official {official_brand} domain.")
+    verified_official = bool(official_brand_for_host(host))
+    if keyword_points:
+        keyword_penalty = min(8, keyword_points)
+        # Words such as login/password/bank are normal on genuine banking and
+        # commerce portals. Do not treat them as phishing evidence by themselves
+        # when the hostname is a verified official domain.
+        if verified_official:
+            keyword_penalty = 0
+        if keyword_penalty:
+            add(keyword_penalty, "Phishing-related words found in the URL")
     checks.append(("Keywords", "warn" if keyword_points else "pass", f"{min(8, keyword_points)} weighted points"))
 
     domain_brand = detect_domain_brand_risk(host)
@@ -1166,7 +1171,7 @@ def analyze_url(url):
         reasons.append(f"The server returned HTTP {http_code}; availability is degraded, but this is not treated as proof of maliciousness.")
 
     # Correlation rule: brand + suspicious auth context is a major security signal.
-    if (domain_brand or typo) and keyword_points >= 3 and not official_brand:
+    if (domain_brand or typo) and keyword_points >= 3:
         add(8, "Brand/domain anomaly is combined with phishing-related URL language")
 
     score = max(0, min(100, round(score)))
@@ -1238,7 +1243,9 @@ def analyze_url(url):
             "http_status": reach["http"],
             "reachable": reach["reachable"],
             "page": page
-        })
+        }),
+        "official_brand": official_brand_for_host(host),
+        "official_domain": bool(official_brand_for_host(host))
     }
 
     # Run the trained 3-class AI model for resolved domains and combine

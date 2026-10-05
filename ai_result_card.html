@@ -2,13 +2,13 @@
 <section class="ai-result-card">
   <div class="ai-result-head">
     <span>🤖 AI Risk Analysis</span>
-    <strong>{{ result.ai.final_prediction or result.ai.prediction }}</strong>
+    <strong>{{ result.ai.prediction }}</strong>
   </div>
 
   <div class="ai-result-grid">
-    <div><small>FINAL AI ASSESSMENT</small><b>{{ result.ai.final_prediction or result.ai.prediction }}</b></div>
-    <div><small>FINAL AI RISK</small><b>{% if result.ai.final_ai_risk is not none %}{{ result.ai.final_ai_risk }}/100{% else %}N/A{% endif %}</b></div>
-    <div><small>MODEL CONFIDENCE</small><b>{% if result.ai.raw_confidence is not none %}{{ result.ai.raw_confidence }}%{% else %}N/A{% endif %}</b></div>
+    <div><small>FINAL AI ASSESSMENT</small><b>{{ result.ai.prediction }}</b></div>
+    <div><small>FINAL AI RISK</small><b>{% if result.ai.ai_risk is not none %}{{ result.ai.ai_risk }}/100{% else %}N/A{% endif %}</b></div>
+    <div><small>RAW MODEL CONFIDENCE</small><b>{% if result.ai.confidence is not none %}{{ result.ai.confidence }}%{% else %}N/A{% endif %}</b></div>
   </div>
 
   {% if result.ai.probabilities %}
@@ -19,10 +19,18 @@
   </div>
   {% endif %}
 
-  {% if result.ai.adjustment %}
-    <p><b>Domain evidence:</b> {{ result.ai.adjustment }}</p>
-  {% else %}
-    <p>AI prediction is combined with URL, domain, webpage and reputation evidence.</p>
+  {% if result.ai.official_domain %}
+  <p><b>Official domain verified:</b> {{ result.ai.official_brand|title }}. The final assessment uses this domain evidence so normal login, payment, or shopping words do not create a false phishing result.</p>
+  {% elif result.ai.assessment_reason %}
+  <p>{{ result.ai.assessment_reason }}</p>
+  {% endif %}
+
+  {% if result.ai.raw_prediction and result.ai.raw_prediction != result.ai.prediction %}
+  <details class="ai-raw-details">
+    <summary>Technical model output</summary>
+    <p>Raw model prediction: <b>{{ result.ai.raw_prediction }}</b> · Raw model risk: <b>{{ result.ai.raw_ai_risk }}/100</b></p>
+    <p>The raw machine-learning output is kept separate from the final security assessment.</p>
+  </details>
   {% endif %}
 </section>
 {% endif %}
