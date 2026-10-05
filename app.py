@@ -247,6 +247,7 @@ def analyze_page_content(page, title, host):
         "phishing_signals": 0,
         "status_code": "200",
         "content_source": "HTTP",
+        "analysis_method": "AI + Multi-Signal Analysis",
         "detail": "Public webpage content was analyzed."
     }
 
@@ -456,7 +457,13 @@ def page_analysis(url):
             result["content_source"] = "HTTP"
             result["detail"] = "The server responded, but readable webpage content was limited."
 
-        return result
+        status = safe_int(result.get("status_code"))
+        if result.get("content_source") == "HTTP" and status is not None and 200 <= status < 300:
+            result["analysis_method"] = "AI + Multi-Signal Analysis"
+        elif status is not None and (status == 403 or status >= 500):
+            result["analysis_method"] = "AI + Domain Analysis (Page Limited)"
+        else:
+            result["analysis_method"] = "AI + Domain Analysis"
 
     except requests.RequestException:
         # A true network/request failure, rather than a normal 403/404 response.
@@ -694,6 +701,7 @@ def apply_ai_layer(result, normalized_url, domain_resolved=True):
             "raw_prediction": None,
             "raw_confidence": None,
             "raw_ai_risk": None,
+            "final_confidence": None,
             "official_domain": False,
             "official_brand": None,
             "assessment_reason": "The domain could not be resolved."
@@ -743,14 +751,18 @@ def apply_ai_layer(result, normalized_url, domain_resolved=True):
             # These are the values shown as the final AI assessment.
             "prediction": final_prediction,
             "confidence": round(float(raw_confidence), 2) if raw_confidence is not None else None,
+            "raw_confidence": round(float(raw_confidence), 2) if raw_confidence is not None else None,
+            "final_confidence": (96.0 if official_brand and gsb.get("safe") is not False and not has_impersonation else (
+                round(float(raw_confidence), 2) if raw_confidence is not None else None
+            )),
             "ai_risk": round(final_ai_risk, 2) if final_ai_risk is not None else None,
             "probabilities": raw.get("probabilities", {}),
             # Raw model output is retained for transparency.
             "raw_prediction": raw_prediction,
-            "raw_confidence": raw_confidence,
             "raw_ai_risk": raw_ai_risk,
             "official_domain": bool(official_brand),
             "official_brand": official_brand,
+            "analysis_method": "AI + Multi-Signal Analysis" if page.get("content_source") == "HTTP" and safe_int(page.get("status_code")) is not None and 200 <= safe_int(page.get("status_code")) < 300 else "AI + Domain Analysis (Page Limited)",
             "assessment_reason": assessment_reason
         }
 
@@ -775,6 +787,7 @@ def apply_ai_layer(result, normalized_url, domain_resolved=True):
             "raw_prediction": None,
             "raw_confidence": None,
             "raw_ai_risk": None,
+            "final_confidence": None,
             "official_domain": False,
             "official_brand": None,
             "assessment_reason": "The AI model could not be loaded."
@@ -916,6 +929,7 @@ def analyze_url(url):
             "payment_signals": 0, "policy_signals": 0, "discount_signals": 0,
             "phishing_signals": 0, "status_code": "Not checked",
             "content_source": "Not checked",
+            "analysis_method": "Domain Resolution Only",
             "detail": "Page analysis was skipped because the domain did not resolve."
         }
         checks.append((
@@ -935,13 +949,13 @@ def analyze_url(url):
             result_status = "Known Threat — Domain Unresolved"
             confidence = 82
         elif unresolved_score > 0:
-            dns_risk_label = risk_level(unresolved_score)
+            dns_risk_label = "Not enough evidence"
             result_status = "Domain Does Not Exist"
-            confidence = 35
+            confidence = 0
         else:
-            dns_risk_label = "Unable to Verify"
+            dns_risk_label = "Not enough evidence"
             result_status = "Domain Does Not Exist"
-            confidence = 25
+            confidence = 0
 
         reasons = unresolved_reasons[:6]
         reasons.extend([
@@ -956,7 +970,7 @@ def analyze_url(url):
             "risk_status": dns_risk_label,
             "invalid_url": False,
             "domain_not_resolved": True,
-            "score": min(100, max(0, round(unresolved_score))),
+            "score": None,
             "confidence": confidence,
             "reasons": reasons[:8],
             "checks": checks,
@@ -975,7 +989,23 @@ def analyze_url(url):
                 "http_status": "Not checked",
                 "reachable": False,
                 "page": page
-            })
+            }),
+            "official_brand": official_brand_for_host(host),
+            "official_domain": bool(official_brand_for_host(host)),
+            "ai": {
+                "enabled": False,
+                "prediction": "Not assessable",
+                "confidence": None,
+                "ai_risk": None,
+                "probabilities": {},
+                "raw_prediction": None,
+                "raw_confidence": None,
+                "raw_ai_risk": None,
+                "official_domain": False,
+                "official_brand": None,
+                "analysis_method": "Domain Resolution Only",
+                "assessment_reason": "The domain could not be resolved, so the AI model result is not used as a website safety verdict."
+            }
         }
         return result
 
@@ -1112,6 +1142,7 @@ def analyze_url(url):
         "payment_signals": 0, "policy_signals": 0, "discount_signals": 0,
         "phishing_signals": 0, "status_code": "Not checked",
         "content_source": "Not checked",
+        "analysis_method": "Domain Resolution Only",
         "detail": "Page analysis skipped because the domain did not resolve."
     }
 

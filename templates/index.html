@@ -136,8 +136,8 @@
     </div>
     <div>
       <small>CONFIDENCE</small>
-      <b>{{ result.confidence }}%</b>
-      <span>Confidence depends on how much evidence was available.</span>
+      <b>{% if result.confidence is none or result.confidence == 0 %}N/A{% else %}{{ result.confidence }}%{% endif %}</b>
+      <span>This is confidence in the overall security assessment, not the raw ML probability.</span>
     </div>
     <div>
       <small>WEBSITE TYPE</small>
@@ -161,7 +161,7 @@
     </div>
     <div>
       <small>ANALYSIS METHOD</small>
-      <b>{{ result.page.analysis_method }}</b>
+      <b>{{ result.page.analysis_method or result.ai.analysis_method or "AI + Domain Analysis" }}</b>
     </div>
   </div>
 
