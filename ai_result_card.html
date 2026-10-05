@@ -1,0 +1,28 @@
+{% if result and result.ai %}
+<section class="ai-result-card">
+  <div class="ai-result-head">
+    <span>🤖 AI Risk Analysis</span>
+    <strong>{{ result.ai.final_prediction or result.ai.prediction }}</strong>
+  </div>
+
+  <div class="ai-result-grid">
+    <div><small>FINAL AI ASSESSMENT</small><b>{{ result.ai.final_prediction or result.ai.prediction }}</b></div>
+    <div><small>FINAL AI RISK</small><b>{% if result.ai.final_ai_risk is not none %}{{ result.ai.final_ai_risk }}/100{% else %}N/A{% endif %}</b></div>
+    <div><small>MODEL CONFIDENCE</small><b>{% if result.ai.raw_confidence is not none %}{{ result.ai.raw_confidence }}%{% else %}N/A{% endif %}</b></div>
+  </div>
+
+  {% if result.ai.probabilities %}
+  <div class="ai-probabilities">
+    {% for label, probability in result.ai.probabilities.items() %}
+      <span><b>{{ label }}:</b> {{ probability }}%</span>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if result.ai.adjustment %}
+    <p><b>Domain evidence:</b> {{ result.ai.adjustment }}</p>
+  {% else %}
+    <p>AI prediction is combined with URL, domain, webpage and reputation evidence.</p>
+  {% endif %}
+</section>
+{% endif %}
