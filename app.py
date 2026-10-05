@@ -655,44 +655,6 @@ def friendly_statuses(result):
     }
 
 
-
-
-# --- SafeLink AI layer ---
-def apply_ai_layer(result, normalized_url, domain_resolved=True):
-    """Add the trained 3-class AI prediction and combine it with SafeLink risk."""
-    if not domain_resolved:
-        result["ai"] = {
-            "enabled": False,
-            "prediction": "Not assessable",
-            "confidence": None,
-            "ai_risk": None,
-            "probabilities": {},
-        }
-        return result
-
-    try:
-        ai = predict_url(normalized_url)
-        result["ai"] = ai
-
-        # Final score = 55% existing SafeLink evidence + 45% AI risk.
-        if isinstance(result.get("score"), (int, float)) and ai.get("ai_risk") is not None:
-            existing_score = max(0, min(100, float(result["score"])))
-            result["score"] = round(
-                0.55 * existing_score + 0.45 * float(ai["ai_risk"])
-            )
-    except Exception as exc:
-        app.logger.warning("AI prediction unavailable: %s", exc)
-        result["ai"] = {
-            "enabled": False,
-            "prediction": "AI unavailable",
-            "confidence": None,
-            "ai_risk": None,
-            "probabilities": {},
-        }
-
-    return result
-
-
 def analyze_url(url):
     original = (url or "").strip()
 
@@ -1262,6 +1224,41 @@ def export():
 init_db()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")), debug=False)
+    app.run(debug=True)
 
 
+
+# --- SafeLink AI layer ---
+def apply_ai_layer(result, normalized_url, domain_resolved=True):
+    """Add the trained 3-class AI prediction and combine it with SafeLink risk."""
+    if not domain_resolved:
+        result["ai"] = {
+            "enabled": False,
+            "prediction": "Not assessable",
+            "confidence": None,
+            "ai_risk": None,
+            "probabilities": {},
+        }
+        return result
+
+    try:
+        ai = predict_url(normalized_url)
+        result["ai"] = ai
+
+        # Final score = 55% existing SafeLink evidence + 45% AI risk.
+        if isinstance(result.get("score"), (int, float)) and ai.get("ai_risk") is not None:
+            existing_score = max(0, min(100, float(result["score"])))
+            result["score"] = round(
+                0.55 * existing_score + 0.45 * float(ai["ai_risk"])
+            )
+    except Exception as exc:
+        app.logger.warning("AI prediction unavailable: %s", exc)
+        result["ai"] = {
+            "enabled": False,
+            "prediction": "AI unavailable",
+            "confidence": None,
+            "ai_risk": None,
+            "probabilities": {},
+        }
+
+    return result

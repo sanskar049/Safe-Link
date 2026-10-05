@@ -1,0 +1,38 @@
+SafeLink AI Retrained Model Report
+
+Dataset:
+- malicious_phish.csv
+- Rows: 651,191
+- Original labels: benign=428,103, defacement=96,457, phishing=94,111, malware=32,520
+
+Training:
+- Project classes: Legitimate, Suspicious, Phishing
+- Balanced samples: 90,000 per class
+- Total balanced URLs: 270,000
+- Features: exact 25 features used by the original notebook
+- Model: RandomForestClassifier
+- Trees: 100
+- max_depth: 24
+- min_samples_leaf: 2
+- class_weight: balanced
+- random_state: 42
+- Test split: 20%
+
+Measured test accuracy on this retraining:
+- 94.7185%
+
+Test confusion matrix (rows=true, columns=predicted):
+[[16779, 1160,   61],
+ [  998, 16351,  651],
+ [   52,   337, 17611]]
+
+Important:
+The 25 URL-structure features alone cannot reliably distinguish an exact legitimate brand
+domain from a phishing URL that contains a brand word. The deployed ai_model.py therefore
+keeps the 25-feature ML model as the AI layer and adds a separate exact-host evidence layer.
+It includes a small trusted exact-host list and a learned list of hosts that were 100% Legitimate
+with at least 10 samples in the balanced training data.
+
+This is not a claim that the system can prove a website is safe. The exact-host evidence is
+only one signal and should remain combined with domain, server, webpage/content and reputation
+checks in the main application.
