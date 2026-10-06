@@ -1101,7 +1101,6 @@ def analyze_url(url):
         "reach_detail": reach["detail"],
         "page": page,
         "content_analysis_label": content_analysis_label(page),
-        "analysis_method": "AI + Multi-Signal Analysis",
         "google_safe_browsing": gsb,
         "friendly_statuses": friendly_statuses({
             "domain_status": reach["dns"],
@@ -1111,8 +1110,6 @@ def analyze_url(url):
         })
     }
 
-    page["analysis_method"] = "AI + Multi-Signal Analysis"
-
     # Run the trained 3-class AI model for resolved domains and combine
     # its AI risk with SafeLink's existing evidence-based score.
     result = apply_ai_layer(
@@ -1120,6 +1117,17 @@ def analyze_url(url):
         normalized,
         domain_resolved=(reach.get("dns") != "Not resolved")
     )
+
+    # Hard guarantee for the web UI: every valid scan has an explicit AI
+    # result object, so the AI Risk Analysis card cannot silently disappear.
+    if not result.get("ai"):
+        result["ai"] = {
+            "enabled": False,
+            "prediction": "AI unavailable",
+            "confidence": None,
+            "ai_risk": None,
+            "probabilities": {},
+        }
 
     # Keep the visible status synchronized with the final combined score.
     if isinstance(result.get("score"), (int, float)):
@@ -1180,6 +1188,28 @@ def handle_unexpected_error(error):
 def index():
     result = analyze_url(request.form.get("url", "")) if request.method == "POST" else None
     if result and not result.get("invalid_url", False):
+        # Safety net: always attach the AI result before rendering the page.
+        # This keeps the AI card visible even if an older analyze_url path
+        # returns before its normal AI-layer call.
+        if not result.get("ai"):
+            try:
+                normalized_for_ai = result.get("url", "")
+                if normalized_for_ai and not normalized_for_ai.lower().startswith(("http://", "https://")):
+                    normalized_for_ai = "https://" + normalized_for_ai
+                result = apply_ai_layer(
+                    result,
+                    normalized_for_ai,
+                    domain_resolved=(result.get("domain_status") != "Not resolved")
+                )
+            except Exception as exc:
+                app.logger.warning("AI render fallback failed: %s", exc)
+                result["ai"] = {
+                    "enabled": False,
+                    "prediction": "AI unavailable",
+                    "confidence": None,
+                    "ai_risk": None,
+                    "probabilities": {},
+                }
         save(result)
     return render_template("index.html", result=result, history=history()[:10])
 

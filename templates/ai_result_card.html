@@ -1,33 +1,22 @@
-{% if result and result.ai %}
+{% if result %}
+{% set ai = result.ai or {"prediction":"AI unavailable", "confidence":none, "ai_risk":none, "probabilities":{}} %}
 <section class="ai-result-card">
   <div class="ai-result-head">
     <span>🤖 AI Risk Analysis</span>
-    <strong>{{ result.ai.prediction }}</strong>
+    <strong>{{ ai.prediction }}</strong>
   </div>
-
   <div class="ai-result-grid">
-    <div><small>AI PREDICTION</small><b>{{ result.ai.prediction }}</b></div>
-    <div><small>AI CONFIDENCE</small><b>{% if result.ai.confidence is not none %}{{ result.ai.confidence }}%{% else %}N/A{% endif %}</b></div>
-    <div><small>AI RISK</small><b>{% if result.ai.ai_risk is not none %}{{ result.ai.ai_risk }}/100{% else %}N/A{% endif %}</b></div>
+    <div><small>AI PREDICTION</small><b>{{ ai.prediction }}</b></div>
+    <div><small>AI CONFIDENCE</small><b>{% if ai.confidence is not none %}{{ ai.confidence }}%{% else %}N/A{% endif %}</b></div>
+    <div><small>AI RISK</small><b>{% if ai.ai_risk is not none %}{{ ai.ai_risk }}/100{% else %}N/A{% endif %}</b></div>
   </div>
-
-  {% if result.ai.probabilities %}
+  {% if ai.probabilities %}
   <div class="ai-probabilities">
-    {% for label in ["Legitimate", "Suspicious", "Phishing"] %}
-      {% if label in result.ai.probabilities %}
-        <span><b>{{ label }}:</b> {{ result.ai.probabilities[label] }}%</span>
-      {% endif %}
+    {% for label, probability in ai.probabilities.items() %}
+      <span><b>{{ label }}:</b> {{ probability }}%</span>
     {% endfor %}
   </div>
   {% endif %}
-
-  {% if result.ai.official_domain %}
-  <p><b>Official domain verified:</b> {{ result.ai.official_brand|title }}. The displayed probabilities are the final AI assessment after combining the model with verified domain/security evidence.</p>
-  {% elif result.ai.assessment_reason %}
-  <p>{{ result.ai.assessment_reason }}</p>
-  {% else %}
-  <p>AI prediction is combined with URL, domain and webpage security evidence.</p>
-  {% endif %}
-
+  <p>AI prediction is an additional layer combined with SafeLink's existing security signals.</p>
 </section>
 {% endif %}
