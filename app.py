@@ -22,7 +22,7 @@ DB = "safelink.db"
 BRANDS = [
     "google", "facebook", "instagram", "microsoft", "apple", "amazon",
     "paypal", "paytm", "phonepe", "flipkart", "netflix", "whatsapp",
-    "linkedin", "groww", "sbi", "hdfcbank", "icicibank", "axisbank"
+    "linkedin", "sbi", "hdfcbank", "icicibank", "axisbank"
 ]
 
 OFFICIAL_DOMAINS = {
@@ -39,12 +39,10 @@ OFFICIAL_DOMAINS = {
     "netflix": {"netflix.com", "www.netflix.com"},
     "whatsapp": {"whatsapp.com", "www.whatsapp.com"},
     "linkedin": {"linkedin.com", "www.linkedin.com"},
-    "groww": {"groww.in", "www.groww.in"},
     "sbi": {"sbi.co.in", "www.sbi.co.in"},
     "hdfcbank": {"hdfcbank.com", "www.hdfcbank.com"},
     "icicibank": {"icicibank.com", "www.icicibank.com"},
     "axisbank": {"axisbank.com", "www.axisbank.com"},
-    "indianbank": {"indianbank.bank.in", "indianbank.in", "indianbank.net.in"},
 }
 
 PHISHING_WORDS = {
@@ -112,25 +110,8 @@ def safe_int(value):
 
 
 def host_is_official(host, brand):
-    """Return True for the official domain and its legitimate subdomains.
-
-    This intentionally uses an exact registrable-domain suffix check so a
-    look-alike such as ``flipkart.com.evil.example`` is never trusted.
-    """
     host = (host or "").lower().rstrip(".")
-    for domain in OFFICIAL_DOMAINS.get(brand, set()):
-        domain = domain.lower().removeprefix("www.").rstrip(".")
-        if host == domain or host.endswith("." + domain):
-            return True
-    return False
-
-
-def official_brand_for_host(host):
-    """Return the verified official brand for a host, otherwise None."""
-    for brand in OFFICIAL_DOMAINS:
-        if host_is_official(host, brand):
-            return brand
-    return None
+    return host in OFFICIAL_DOMAINS.get(brand, set())
 
 
 def domain_labels(host):
@@ -674,161 +655,6 @@ def friendly_statuses(result):
     }
 
 
-
-
-# --- SafeLink AI layer ---
-def apply_ai_layer(result, normalized_url, domain_resolved=True):
-    """Add AI output and a transparent final assessment.
-
-    The trained model's raw output is preserved.  For a verified official
-    domain, the final assessment is allowed to disagree with a known model
-    false-positive because domain identity is an independent security signal.
-    """
-    if not domain_resolved:
-        result["ai"] = {
-            "enabled": False,
-            "prediction": "Not assessable",
-            "final_prediction": "Not assessable",
-            "confidence": None,
-            "ai_risk": None,
-            "probabilities": {},
-            "raw_prediction": None,
-            "raw_confidence": None,
-            "raw_ai_risk": None,
-            "official_domain": False,
-            "official_brand": None,
-            "assessment_reason": "The domain could not be resolved."
-        }
-        return result
-
-    try:
-        raw = predict_url(normalized_url)
-        host = (result.get("host") or "").lower().rstrip(".")
-        official_brand = official_brand_for_host(host)
-        gsb = result.get("google_safe_browsing") or {}
-        page = result.get("page") or {}
-        has_impersonation = bool(result.get("reasons") and any(
-            "impersonation" in str(x).lower() or "typosquatting" in str(x).lower()
-            for x in result.get("reasons", [])
-        )) or bool(page.get("brand_impersonation"))
-
-        raw_prediction = raw.get("prediction")
-        raw_confidence = raw.get("confidence")
-        raw_ai_risk = raw.get("ai_risk")
-        raw_probabilities = raw.get("probabilities") or {}
-
-        # The probabilities shown in the UI must describe the FINAL AI
-        # assessment, not the unadjusted model output.  Start from the model
-        # probabilities, apply independently verified security evidence, then
-        # normalize them so the largest percentage matches the final class.
-        labels = ("Legitimate", "Suspicious", "Phishing")
-        adjusted = {label: max(0.1, float(raw_probabilities.get(label, 0.0) or 0.0)) for label in labels}
-
-        final_prediction = raw_prediction
-        final_ai_risk = raw_ai_risk
-        assessment_reason = "AI model prediction combined with security evidence."
-
-        if official_brand and gsb.get("safe") is not False and not has_impersonation:
-            # Verified official identity is strong positive evidence.  It
-            # should move the displayed assessment probabilities toward
-            # Legitimate while still retaining some uncertainty.
-            adjusted["Legitimate"] *= 500.0
-            adjusted["Suspicious"] *= 0.25
-            adjusted["Phishing"] *= 0.01
-        elif gsb.get("safe") is False:
-            adjusted["Legitimate"] *= 0.05
-            adjusted["Suspicious"] *= 2.0
-            adjusted["Phishing"] *= 20.0
-        elif has_impersonation:
-            adjusted["Legitimate"] *= 0.10
-            adjusted["Suspicious"] *= 3.0
-            adjusted["Phishing"] *= 12.0
-
-        total = sum(adjusted.values()) or 1.0
-        final_probabilities = {label: round(adjusted[label] * 100.0 / total, 2) for label in labels}
-        # Correct rounding so the three displayed values always total exactly 100.00%.
-        largest = max(final_probabilities, key=final_probabilities.get)
-        final_probabilities[largest] = round(100.0 - sum(v for k, v in final_probabilities.items() if k != largest), 2)
-
-        if official_brand and gsb.get("safe") is not False and not has_impersonation:
-            final_prediction = "Legitimate"
-            final_ai_risk = min(float(raw_ai_risk or 0), 8.0)
-            assessment_reason = f"Verified official {official_brand.title()} domain; final assessment includes domain identity evidence."
-        elif gsb.get("safe") is False:
-            final_prediction = "Phishing"
-            final_ai_risk = max(float(raw_ai_risk or 0), 90.0)
-            assessment_reason = "Known threat reported by Google Safe Browsing."
-        elif has_impersonation:
-            final_prediction = "Phishing" if float(raw_ai_risk or 0) >= 50 else "Suspicious"
-            final_ai_risk = max(float(raw_ai_risk or 0), 65.0)
-            assessment_reason = "Brand/domain impersonation or typosquatting evidence was detected."
-        else:
-            # For the normal case, the highest final probability determines
-            # the displayed class, keeping prediction and percentages aligned.
-            final_prediction = max(final_probabilities, key=final_probabilities.get)
-            assessment_reason = "AI model prediction combined with URL, domain and webpage evidence."
-
-        # A verified official domain is strong positive evidence, but never
-        # overrides an independently confirmed threat or impersonation signal.
-        if (official_brand and gsb.get("safe") is not False and not has_impersonation):
-            final_prediction = "Legitimate"
-            final_ai_risk = min(float(raw_ai_risk or 0), 8.0)
-            assessment_reason = (
-                f"Verified official {official_brand.title()} domain; raw AI output was {raw_prediction} "
-                "and was adjusted using domain evidence."
-            )
-        elif gsb.get("safe") is False:
-            final_prediction = "Phishing"
-            final_ai_risk = max(float(raw_ai_risk or 0), 90.0)
-            assessment_reason = "Known threat reported by Google Safe Browsing."
-        elif has_impersonation:
-            final_prediction = "Phishing" if float(raw_ai_risk or 0) >= 50 else "Suspicious"
-            final_ai_risk = max(float(raw_ai_risk or 0), 65.0)
-            assessment_reason = "Brand/domain impersonation or typosquatting evidence was detected."
-        else:
-            assessment_reason = "AI model prediction combined with URL, domain and webpage evidence."
-
-        result["ai"] = {
-            "enabled": True,
-            # These are the values shown as the final AI assessment.
-            "prediction": final_prediction,
-            "confidence": round(max(final_probabilities.values()), 2),
-            "ai_risk": round(final_ai_risk, 2) if final_ai_risk is not None else None,
-            "probabilities": final_probabilities,
-            "official_domain": bool(official_brand),
-            "official_brand": official_brand,
-            "assessment_reason": assessment_reason
-        }
-
-        # Official domains should not be penalized by a known model false-positive.
-        # For other URLs, retain the existing evidence + AI weighting.
-        if isinstance(result.get("score"), (int, float)) and final_ai_risk is not None:
-            existing_score = max(0, min(100, float(result["score"])))
-            if official_brand and gsb.get("safe") is not False and not has_impersonation:
-                result["score"] = round(min(existing_score, 15.0))
-            else:
-                result["score"] = round(0.55 * existing_score + 0.45 * float(final_ai_risk))
-
-    except Exception as exc:
-        app.logger.warning("AI prediction unavailable: %s", exc)
-        result["ai"] = {
-            "enabled": False,
-            "prediction": "AI unavailable",
-            "final_prediction": "AI unavailable",
-            "confidence": None,
-            "ai_risk": None,
-            "probabilities": {},
-            "raw_prediction": None,
-            "raw_confidence": None,
-            "raw_ai_risk": None,
-            "official_domain": False,
-            "official_brand": None,
-            "assessment_reason": "The AI model could not be loaded."
-        }
-
-    return result
-
-
 def analyze_url(url):
     original = (url or "").strip()
 
@@ -1015,7 +841,6 @@ def analyze_url(url):
             "reach_detail": "The domain could not be resolved by DNS.",
             "page": page,
             "content_analysis_label": "Page was not checked",
-            "analysis_method": "Domain Resolution Only",
             "google_safe_browsing": gsb,
             "friendly_statuses": friendly_statuses({
                 "domain_status": "Not resolved",
@@ -1087,16 +912,8 @@ def analyze_url(url):
 
     # Keyword points are deliberately capped. A keyword alone is weak evidence.
     keyword_points = sum(weight for word, weight in PHISHING_WORDS.items() if word in text)
-    verified_official = bool(official_brand_for_host(host))
     if keyword_points:
-        keyword_penalty = min(8, keyword_points)
-        # Words such as login/password/bank are normal on genuine banking and
-        # commerce portals. Do not treat them as phishing evidence by themselves
-        # when the hostname is a verified official domain.
-        if verified_official:
-            keyword_penalty = 0
-        if keyword_penalty:
-            add(keyword_penalty, "Phishing-related words found in the URL")
+        add(min(8, keyword_points), "Phishing-related words found in the URL")
     checks.append(("Keywords", "warn" if keyword_points else "pass", f"{min(8, keyword_points)} weighted points"))
 
     domain_brand = detect_domain_brand_risk(host)
@@ -1291,10 +1108,10 @@ def analyze_url(url):
             "http_status": reach["http"],
             "reachable": reach["reachable"],
             "page": page
-        }),
-        "official_brand": official_brand_for_host(host),
-        "official_domain": bool(official_brand_for_host(host))
+        })
     }
+
+    page["analysis_method"] = "AI + Multi-Signal Analysis"
 
     # Run the trained 3-class AI model for resolved domains and combine
     # its AI risk with SafeLink's existing evidence-based score.
@@ -1410,6 +1227,41 @@ def export():
 init_db()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")), debug=False)
+    app.run(debug=True)
 
 
+
+# --- SafeLink AI layer ---
+def apply_ai_layer(result, normalized_url, domain_resolved=True):
+    """Add the trained 3-class AI prediction and combine it with SafeLink risk."""
+    if not domain_resolved:
+        result["ai"] = {
+            "enabled": False,
+            "prediction": "Not assessable",
+            "confidence": None,
+            "ai_risk": None,
+            "probabilities": {},
+        }
+        return result
+
+    try:
+        ai = predict_url(normalized_url)
+        result["ai"] = ai
+
+        # Final score = 55% existing SafeLink evidence + 45% AI risk.
+        if isinstance(result.get("score"), (int, float)) and ai.get("ai_risk") is not None:
+            existing_score = max(0, min(100, float(result["score"])))
+            result["score"] = round(
+                0.55 * existing_score + 0.45 * float(ai["ai_risk"])
+            )
+    except Exception as exc:
+        app.logger.warning("AI prediction unavailable: %s", exc)
+        result["ai"] = {
+            "enabled": False,
+            "prediction": "AI unavailable",
+            "confidence": None,
+            "ai_risk": None,
+            "probabilities": {},
+        }
+
+    return result
