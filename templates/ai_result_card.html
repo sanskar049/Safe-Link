@@ -25,6 +25,9 @@
   <p><b>Official domain verified:</b> {{ result.ai.official_brand|title }}. The displayed probabilities are the final AI assessment after combining the model with verified domain/security evidence.</p>
   {% elif result.ai.assessment_reason %}
   <p>{{ result.ai.assessment_reason }}</p>
+  {% else %}
+  <p>AI prediction is combined with URL, domain and webpage security evidence.</p>
   {% endif %}
+
 </section>
 {% endif %}
