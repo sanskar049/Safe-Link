@@ -2,54 +2,29 @@
 <section class="ai-result-card">
   <div class="ai-result-head">
     <span>🤖 AI Risk Analysis</span>
-    <strong>{% if result.ai.final_prediction is defined %}{{ result.ai.final_prediction }}{% else %}{{ result.ai.prediction }}{% endif %}</strong>
+    <strong>{{ result.ai.prediction }}</strong>
   </div>
-
-  {% set lp = result.ai.probabilities.get('Legitimate', 0) %}
-  {% set pp = result.ai.probabilities.get('Phishing', 0) %}
-  {% set sp = result.ai.probabilities.get('Suspicious', 0) %}
-
-  {% if pp >= lp and pp >= sp %}
-    {% set raw_prediction = 'Phishing' %}
-  {% elif sp >= lp and sp >= pp %}
-    {% set raw_prediction = 'Suspicious' %}
-  {% else %}
-    {% set raw_prediction = 'Legitimate' %}
-  {% endif %}
-
-  {% set raw_confidence = [lp, pp, sp]|max %}
-  {% set raw_risk = (pp + (sp * 0.50))|round(2) %}
 
   <div class="ai-result-grid">
-    <div><small>FINAL ASSESSMENT</small><b>{% if result.ai.final_prediction is defined %}{{ result.ai.final_prediction }}{% else %}{{ result.ai.prediction }}{% endif %}</b></div>
-    <div><small>FINAL AI RISK</small><b>{% if result.ai.final_ai_risk is defined and result.ai.final_ai_risk is not none %}{{ result.ai.final_ai_risk }}/100{% elif result.ai.ai_risk is not none %}{{ result.ai.ai_risk }}/100{% else %}N/A{% endif %}</b></div>
-    <div><small>ASSESSMENT CONFIDENCE</small><b>{% if result.ai.assessment_confidence is defined and result.ai.assessment_confidence is not none %}{{ result.ai.assessment_confidence }}%{% else %}N/A{% endif %}</b></div>
+    <div><small>AI PREDICTION</small><b>{{ result.ai.prediction }}</b></div>
+    <div><small>AI CONFIDENCE</small><b>{% if result.ai.confidence is not none %}{{ result.ai.confidence }}%{% else %}N/A{% endif %}</b></div>
+    <div><small>AI RISK</small><b>{% if result.ai.ai_risk is not none %}{{ result.ai.ai_risk }}/100{% else %}N/A{% endif %}</b></div>
   </div>
 
+  {% if result.ai.probabilities %}
   <div class="ai-probabilities">
-    <span><b>RAW AI PREDICTION:</b> {{ raw_prediction }}</span>
-    <span><b>RAW AI CONFIDENCE:</b> {{ raw_confidence }}%</span>
-    <span><b>RAW AI RISK:</b> {{ raw_risk }}/100</span>
+    {% for label in ["Legitimate", "Suspicious", "Phishing"] %}
+      {% if label in result.ai.probabilities %}
+        <span><b>{{ label }}:</b> {{ result.ai.probabilities[label] }}%</span>
+      {% endif %}
+    {% endfor %}
   </div>
-
-  <div class="ai-probabilities">
-    <span><b>Legitimate:</b> {{ lp }}%</span>
-    <span><b>Phishing:</b> {{ pp }}%</span>
-    <span><b>Suspicious:</b> {{ sp }}%</span>
-  </div>
-
-  {% if result.ai.official_domain is defined and result.ai.official_domain %}
-    <p><b>Official domain verified:</b> {{ result.ai.official_domain }}. The final assessment uses independently checked domain/security evidence, while the raw ML output is shown separately.</p>
-  {% else %}
-    <p>The AI prediction is combined with SafeLink's independent security evidence to produce the final assessment.</p>
   {% endif %}
 
-  {% if raw_prediction != (result.ai.final_prediction if result.ai.final_prediction is defined else result.ai.prediction) %}
-    <details>
-      <summary>Why does the final result differ from the raw model?</summary>
-      <p><b>Raw model prediction:</b> {{ raw_prediction }} &nbsp;•&nbsp; <b>Raw model confidence:</b> {{ raw_confidence }}% &nbsp;•&nbsp; <b>Raw model risk:</b> {{ raw_risk }}/100</p>
-      <p>The trained ML model is one signal. SafeLink keeps the raw model probabilities unchanged and combines them with independently checked domain and security evidence for the final assessment.</p>
-    </details>
+  {% if result.ai.official_domain %}
+  <p><b>Official domain verified:</b> {{ result.ai.official_brand|title }}. The displayed probabilities are the final AI assessment after combining the model with verified domain/security evidence.</p>
+  {% elif result.ai.assessment_reason %}
+  <p>{{ result.ai.assessment_reason }}</p>
   {% endif %}
 </section>
 {% endif %}
