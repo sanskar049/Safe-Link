@@ -823,6 +823,7 @@ def analyze_url(url):
         if not unresolved_reasons:
             reasons.append("A DNS failure does not prove that a website is malicious.")
 
+        page["analysis_method"] = "AI + Multi-Signal Analysis"
         result = {
             "status": result_status,
             "risk_status": dns_risk_label,
@@ -841,6 +842,7 @@ def analyze_url(url):
             "reach_detail": "The domain could not be resolved by DNS.",
             "page": page,
             "content_analysis_label": "Page was not checked",
+            "analysis_method": "AI + Multi-Signal Analysis",
             "google_safe_browsing": gsb,
             "friendly_statuses": friendly_statuses({
                 "domain_status": "Not resolved",
@@ -1084,6 +1086,10 @@ def analyze_url(url):
         display_score = score
         risk_status_value = status
 
+    # Keep the analysis-method label visible in the result card.
+    # The template reads this value from result.page.
+    page["analysis_method"] = "AI + Multi-Signal Analysis"
+
     result = {
         "status": display_status,
         "risk_status": risk_status_value,
@@ -1101,6 +1107,7 @@ def analyze_url(url):
         "reach_detail": reach["detail"],
         "page": page,
         "content_analysis_label": content_analysis_label(page),
+        "analysis_method": "AI + Multi-Signal Analysis",
         "google_safe_browsing": gsb,
         "friendly_statuses": friendly_statuses({
             "domain_status": reach["dns"],

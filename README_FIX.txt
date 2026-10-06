@@ -1,9 +1,18 @@
-SafeLink AI Card Fix
+SafeLink Final Fix v2
 
-Purpose: restore the AI Risk Analysis card on the result page.
+Fixes:
+1. Restores the blank ANALYSIS METHOD box with: AI + Multi-Signal Analysis.
+2. Keeps the AI Risk Analysis card visible.
+3. Updates scikit-learn to 1.8.0 to match the trained model and remove the InconsistentVersionWarning.
 
-Files: app.py, templates/index.html, templates/ai_result_card.html, static/ai_card.css.
+Replace:
+- app.py
+- templates/index.html
+- templates/ai_result_card.html
+- static/ai_card.css
+- requirements.txt
 
-Main fix: app.py now guarantees an explicit result["ai"] before rendering a valid scan, with a fallback prediction only if the model layer itself is unavailable. The template also no longer silently hides the card when result.ai is missing.
-
-After replacing these files in the repository, commit and push to main. Render should auto-deploy the new commit.
+Then:
+git add .
+git commit -m "Fix analysis method and sklearn version"
+git push origin main
