@@ -1,22 +1,13 @@
-SafeLink AI Final Consistency Fix
+SafeLink – Groww + Analysis Method Fix
 
-Purpose:
-- The AI prediction and the three displayed percentages now always describe the SAME final assessment.
-- If final AI prediction is Legitimate, Legitimate will be the highest displayed percentage.
-- No raw model probability/confidence is shown in the normal UI.
-- Official domains such as Flipkart and Indian Bank use verified-domain evidence to adjust the final assessment.
-- The trained model itself is not retrained or modified.
+Changes:
+1. Adds groww.in and www.groww.in to verified official domains.
+2. Official Groww domains are treated as verified official identity, so normal
+   payment/login content does not unnecessarily push the risk score high.
+3. Adds analysis_method to the scan result so the UI no longer shows a blank
+   ANALYSIS METHOD field.
+   - Resolved domains: AI + Multi-Signal Analysis
+   - Unresolved domains: Domain Resolution Only
+4. No model retraining is required.
 
-Example:
-Final AI Prediction: Legitimate
-Legitimate: 82.1%
-Suspicious: 10.1%
-Phishing: 7.8%
-
-The exact percentages depend on the model output and verified security evidence.
-
-Files:
-- app.py
-- ai_model.py
-- ai_result_card.html
-- index.html
+Copy these files into the project and deploy normally.

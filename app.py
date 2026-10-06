@@ -22,7 +22,7 @@ DB = "safelink.db"
 BRANDS = [
     "google", "facebook", "instagram", "microsoft", "apple", "amazon",
     "paypal", "paytm", "phonepe", "flipkart", "netflix", "whatsapp",
-    "linkedin", "sbi", "hdfcbank", "icicibank", "axisbank"
+    "linkedin", "groww", "sbi", "hdfcbank", "icicibank", "axisbank"
 ]
 
 OFFICIAL_DOMAINS = {
@@ -39,6 +39,7 @@ OFFICIAL_DOMAINS = {
     "netflix": {"netflix.com", "www.netflix.com"},
     "whatsapp": {"whatsapp.com", "www.whatsapp.com"},
     "linkedin": {"linkedin.com", "www.linkedin.com"},
+    "groww": {"groww.in", "www.groww.in"},
     "sbi": {"sbi.co.in", "www.sbi.co.in"},
     "hdfcbank": {"hdfcbank.com", "www.hdfcbank.com"},
     "icicibank": {"icicibank.com", "www.icicibank.com"},
@@ -1014,6 +1015,7 @@ def analyze_url(url):
             "reach_detail": "The domain could not be resolved by DNS.",
             "page": page,
             "content_analysis_label": "Page was not checked",
+            "analysis_method": "Domain Resolution Only",
             "google_safe_browsing": gsb,
             "friendly_statuses": friendly_statuses({
                 "domain_status": "Not resolved",
@@ -1282,6 +1284,7 @@ def analyze_url(url):
         "reach_detail": reach["detail"],
         "page": page,
         "content_analysis_label": content_analysis_label(page),
+        "analysis_method": "AI + Multi-Signal Analysis",
         "google_safe_browsing": gsb,
         "friendly_statuses": friendly_statuses({
             "domain_status": reach["dns"],
