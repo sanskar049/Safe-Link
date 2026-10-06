@@ -247,7 +247,6 @@ def analyze_page_content(page, title, host):
         "phishing_signals": 0,
         "status_code": "200",
         "content_source": "HTTP",
-        "analysis_method": "AI + Multi-Signal Analysis",
         "detail": "Public webpage content was analyzed."
     }
 
@@ -457,13 +456,7 @@ def page_analysis(url):
             result["content_source"] = "HTTP"
             result["detail"] = "The server responded, but readable webpage content was limited."
 
-        status = safe_int(result.get("status_code"))
-        if result.get("content_source") == "HTTP" and status is not None and 200 <= status < 300:
-            result["analysis_method"] = "AI + Multi-Signal Analysis"
-        elif status is not None and (status == 403 or status >= 500):
-            result["analysis_method"] = "AI + Domain Analysis (Page Limited)"
-        else:
-            result["analysis_method"] = "AI + Domain Analysis"
+        return result
 
     except requests.RequestException:
         # A true network/request failure, rather than a normal 403/404 response.
@@ -701,7 +694,6 @@ def apply_ai_layer(result, normalized_url, domain_resolved=True):
             "raw_prediction": None,
             "raw_confidence": None,
             "raw_ai_risk": None,
-            "final_confidence": None,
             "official_domain": False,
             "official_brand": None,
             "assessment_reason": "The domain could not be resolved."
@@ -722,9 +714,58 @@ def apply_ai_layer(result, normalized_url, domain_resolved=True):
         raw_prediction = raw.get("prediction")
         raw_confidence = raw.get("confidence")
         raw_ai_risk = raw.get("ai_risk")
+        raw_probabilities = raw.get("probabilities") or {}
+
+        # The probabilities shown in the UI must describe the FINAL AI
+        # assessment, not the unadjusted model output.  Start from the model
+        # probabilities, apply independently verified security evidence, then
+        # normalize them so the largest percentage matches the final class.
+        labels = ("Legitimate", "Suspicious", "Phishing")
+        adjusted = {label: max(0.1, float(raw_probabilities.get(label, 0.0) or 0.0)) for label in labels}
+
         final_prediction = raw_prediction
         final_ai_risk = raw_ai_risk
         assessment_reason = "AI model prediction combined with security evidence."
+
+        if official_brand and gsb.get("safe") is not False and not has_impersonation:
+            # Verified official identity is strong positive evidence.  It
+            # should move the displayed assessment probabilities toward
+            # Legitimate while still retaining some uncertainty.
+            adjusted["Legitimate"] *= 500.0
+            adjusted["Suspicious"] *= 0.25
+            adjusted["Phishing"] *= 0.01
+        elif gsb.get("safe") is False:
+            adjusted["Legitimate"] *= 0.05
+            adjusted["Suspicious"] *= 2.0
+            adjusted["Phishing"] *= 20.0
+        elif has_impersonation:
+            adjusted["Legitimate"] *= 0.10
+            adjusted["Suspicious"] *= 3.0
+            adjusted["Phishing"] *= 12.0
+
+        total = sum(adjusted.values()) or 1.0
+        final_probabilities = {label: round(adjusted[label] * 100.0 / total, 2) for label in labels}
+        # Correct rounding so the three displayed values always total exactly 100.00%.
+        largest = max(final_probabilities, key=final_probabilities.get)
+        final_probabilities[largest] = round(100.0 - sum(v for k, v in final_probabilities.items() if k != largest), 2)
+
+        if official_brand and gsb.get("safe") is not False and not has_impersonation:
+            final_prediction = "Legitimate"
+            final_ai_risk = min(float(raw_ai_risk or 0), 8.0)
+            assessment_reason = f"Verified official {official_brand.title()} domain; final assessment includes domain identity evidence."
+        elif gsb.get("safe") is False:
+            final_prediction = "Phishing"
+            final_ai_risk = max(float(raw_ai_risk or 0), 90.0)
+            assessment_reason = "Known threat reported by Google Safe Browsing."
+        elif has_impersonation:
+            final_prediction = "Phishing" if float(raw_ai_risk or 0) >= 50 else "Suspicious"
+            final_ai_risk = max(float(raw_ai_risk or 0), 65.0)
+            assessment_reason = "Brand/domain impersonation or typosquatting evidence was detected."
+        else:
+            # For the normal case, the highest final probability determines
+            # the displayed class, keeping prediction and percentages aligned.
+            final_prediction = max(final_probabilities, key=final_probabilities.get)
+            assessment_reason = "AI model prediction combined with URL, domain and webpage evidence."
 
         # A verified official domain is strong positive evidence, but never
         # overrides an independently confirmed threat or impersonation signal.
@@ -750,19 +791,11 @@ def apply_ai_layer(result, normalized_url, domain_resolved=True):
             "enabled": True,
             # These are the values shown as the final AI assessment.
             "prediction": final_prediction,
-            "confidence": round(float(raw_confidence), 2) if raw_confidence is not None else None,
-            "raw_confidence": round(float(raw_confidence), 2) if raw_confidence is not None else None,
-            "final_confidence": (96.0 if official_brand and gsb.get("safe") is not False and not has_impersonation else (
-                round(float(raw_confidence), 2) if raw_confidence is not None else None
-            )),
+            "confidence": round(max(final_probabilities.values()), 2),
             "ai_risk": round(final_ai_risk, 2) if final_ai_risk is not None else None,
-            "probabilities": raw.get("probabilities", {}),
-            # Raw model output is retained for transparency.
-            "raw_prediction": raw_prediction,
-            "raw_ai_risk": raw_ai_risk,
+            "probabilities": final_probabilities,
             "official_domain": bool(official_brand),
             "official_brand": official_brand,
-            "analysis_method": "AI + Multi-Signal Analysis" if page.get("content_source") == "HTTP" and safe_int(page.get("status_code")) is not None and 200 <= safe_int(page.get("status_code")) < 300 else "AI + Domain Analysis (Page Limited)",
             "assessment_reason": assessment_reason
         }
 
@@ -787,7 +820,6 @@ def apply_ai_layer(result, normalized_url, domain_resolved=True):
             "raw_prediction": None,
             "raw_confidence": None,
             "raw_ai_risk": None,
-            "final_confidence": None,
             "official_domain": False,
             "official_brand": None,
             "assessment_reason": "The AI model could not be loaded."
@@ -929,7 +961,6 @@ def analyze_url(url):
             "payment_signals": 0, "policy_signals": 0, "discount_signals": 0,
             "phishing_signals": 0, "status_code": "Not checked",
             "content_source": "Not checked",
-            "analysis_method": "Domain Resolution Only",
             "detail": "Page analysis was skipped because the domain did not resolve."
         }
         checks.append((
@@ -949,13 +980,13 @@ def analyze_url(url):
             result_status = "Known Threat — Domain Unresolved"
             confidence = 82
         elif unresolved_score > 0:
-            dns_risk_label = "Not enough evidence"
+            dns_risk_label = risk_level(unresolved_score)
             result_status = "Domain Does Not Exist"
-            confidence = 0
+            confidence = 35
         else:
-            dns_risk_label = "Not enough evidence"
+            dns_risk_label = "Unable to Verify"
             result_status = "Domain Does Not Exist"
-            confidence = 0
+            confidence = 25
 
         reasons = unresolved_reasons[:6]
         reasons.extend([
@@ -970,7 +1001,7 @@ def analyze_url(url):
             "risk_status": dns_risk_label,
             "invalid_url": False,
             "domain_not_resolved": True,
-            "score": None,
+            "score": min(100, max(0, round(unresolved_score))),
             "confidence": confidence,
             "reasons": reasons[:8],
             "checks": checks,
@@ -989,23 +1020,7 @@ def analyze_url(url):
                 "http_status": "Not checked",
                 "reachable": False,
                 "page": page
-            }),
-            "official_brand": official_brand_for_host(host),
-            "official_domain": bool(official_brand_for_host(host)),
-            "ai": {
-                "enabled": False,
-                "prediction": "Not assessable",
-                "confidence": None,
-                "ai_risk": None,
-                "probabilities": {},
-                "raw_prediction": None,
-                "raw_confidence": None,
-                "raw_ai_risk": None,
-                "official_domain": False,
-                "official_brand": None,
-                "analysis_method": "Domain Resolution Only",
-                "assessment_reason": "The domain could not be resolved, so the AI model result is not used as a website safety verdict."
-            }
+            })
         }
         return result
 
@@ -1142,7 +1157,6 @@ def analyze_url(url):
         "payment_signals": 0, "policy_signals": 0, "discount_signals": 0,
         "phishing_signals": 0, "status_code": "Not checked",
         "content_source": "Not checked",
-        "analysis_method": "Domain Resolution Only",
         "detail": "Page analysis skipped because the domain did not resolve."
     }
 
